@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>剪贴板布局方案对比</title>
+<style>
+  :root {
+    --bg: #e8eef4;
+    --panel: rgba(255, 255, 255, 0.72);
+    --panel-solid: #ffffff;
+    --border: rgba(0, 0, 0, 0.08);
+    --text: #1c1c1e;
+    --text-dim: #8a8a8e;
+    --accent: #0a84ff;
+    --hover: rgba(10, 132, 255, 0.10);
+    --radius: 14px;
+    --shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+    font-family: -apple-system, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 600px at 20% -10%, #cfe3f7 0%, transparent 60%),
+      radial-gradient(1000px 700px at 90% 10%, #dbeae0 0%, transparent 55%),
+      linear-gradient(160deg, #dce6f0 0%, #cdd9e6 100%);
+    min-height: 100vh;
+    color: var(--text);
+    padding: 40px 32px 80px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 6px;
+    letter-spacing: -0.3px;
+  }
+  .subtitle {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 40px;
+  }
+  .grid-wrap {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(420px, 1fr));
+    gap: 36px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .option {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .option-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px; height: 26px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 14px;
+    flex-shrink: 0;
+  }
+  .option-title { font-size: 16px; font-weight: 650; }
+  .option-desc { font-size: 12px; color: var(--text-dim); margin-left: auto; text-align: right; max-width: 200px; }
+
+  /* 弹窗容器（模拟剪贴板面板） */
+  .panel {
+    background: var(--panel);
+    backdrop-filter: blur(30px) saturate(1.4);
+    -webkit-backdrop-filter: blur(30px) saturate(1.4);
+    border: 1px solid rgba(255,255,255,0.6);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    height: 360px;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.r { background: #ff5f57; } .dot.y { background: #febc2e; } .dot.g { background: #28c840; }
+  .panel-header .title { margin-left: 8px; }
+  .search {
+    margin-left: auto;
+    background: rgba(0,0,0,0.05);
+    border-radius: 7px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 120px;
+  }
+  .panel-body { flex: 1; overflow-y: auto; padding: 10px; }
+  .panel-body::-webkit-scrollbar { width: 8px; }
+  .panel-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+
+  /* 图片占位色块 */
+  .thumb {
+    border-radius: 8px;
+    background-size: cover;
+    background-position: center;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+  }
+  .thumb.a { background: linear-gradient(135deg,#ff9a9e,#fecfef); }
+  .thumb.b { background: linear-gradient(135deg,#a1c4fd,#c2e9fb); }
+  .thumb.c { background: linear-gradient(135deg,#84fab0,#8fd3f4); }
+  .thumb.d { background: linear-gradient(135deg,#fbc2eb,#a6c1ee); }
+  .thumb.e { background: linear-gradient(135deg,#fddb92,#d1fdff); }
+  .thumb.f { background: linear-gradient(135deg,#ffecd2,#fcb69f); }
+  .thumb-tag {
+    position: absolute; bottom: 4px; right: 4px;
+    background: rgba(0,0,0,0.55); color:#fff;
+    font-size: 9px; padding: 1px 5px; border-radius: 4px;
+  }
+
+  /* ---------- 方案 A：大缩略图网格 ---------- */
+  .tabbar { display:flex; gap:6px; padding: 8px 12px; border-bottom:1px solid var(--border); }
+  .tab { font-size:11px; padding:3px 10px; border-radius:6px; color:var(--text-dim); cursor:default; }
+  .tab.active { background: var(--accent); color:#fff; }
+  .grid-imgs { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
+  .grid-imgs .thumb { aspect-ratio: 1; }
+  .grid-imgs .label { position:absolute; bottom:0; left:0; right:0; background:linear-gradient(transparent,rgba(0,0,0,0.6)); color:#fff; font-size:9px; padding:10px 5px 3px; }
+
+  /* ---------- 方案 B：列表 + 中等预览 ---------- */
+  .list .row {
+    display:flex; align-items:center; gap:12px;
+    padding:8px 10px; border-radius:9px; cursor:default;
+  }
+  .list .row:hover { background: var(--hover); }
+  .list .thumb { width:56px; height:56px; }
+  .list .row .meta { min-width:0; }
+  .list .row .name { font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .list .row .sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .row .ico { width:36px;height:36px;border-radius:7px;background:rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+
+  /* ---------- 方案 C：悬停放大 ---------- */
+  .hoverlist .row { display:flex; align-items:center; gap:12px; padding:7px 10px; border-radius:9px; position:relative; }
+  .hoverlist .row:hover { background: var(--hover); }
+  .hoverlist .thumb { width:34px; height:34px; }
+  .hoverlist .name { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .hoverlist .sub { font-size:11px; color:var(--text-dim); }
+  .popover {
+    position:absolute; left:50%; top:100%; transform:translateX(-50%) scale(0.9);
+    width:180px; height:130px; border-radius:10px; box-shadow:0 12px 30px rgba(0,0,0,0.3);
+    opacity:0; pointer-events:none; transition:.16s ease; z-index:5; border:2px solid #fff;
+  }
+  .hoverlist .row:hover .popover { opacity:1; transform:translateX(-50%) scale(1); }
+  .hint { text-align:center; font-size:11px; color:var(--text-dim); padding:6px; }
+
+  /* ---------- 方案 D：分栏 ---------- */
+  .split { display:flex; height:100%; }
+  .split .left { width:52%; overflow-y:auto; padding:8px; border-right:1px solid var(--border); }
+  .split .left .row { display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:8px; font-size:12px; }
+  .split .left .row.sel { background: var(--accent); color:#fff; }
+  .split .left .row.sel .sub { color: rgba(255,255,255,0.8); }
+  .split .left .thumb { width:30px; height:30px; }
+  .split .left .name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .split .left .sub { font-size:10px; color:var(--text-dim); }
+  .split .right { flex:1; padding:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; }
+  .split .right .bigimg { width:100%; height:150px; border-radius:10px; }
+  .split .right .info { font-size:11px; color:var(--text-dim); text-align:center; }
+  .split .right .actions { display:flex; gap:8px; }
+  .split .right .btn { font-size:11px; padding:5px 14px; border-radius:7px; background:var(--accent); color:#fff; }
+  .split .right .btn.ghost { background:rgba(0,0,0,0.06); color:var(--text); }
+</style>
+</head>
+<body>
+  <h1>图片预览布局 · 4 种方案对比</h1>
+  <p class="subtitle">同样是连续复制的多张图片，看哪种布局你最容易分辨和选取</p>
+
+  <div class="grid-wrap">
+
+    <!-- 方案 A -->
+    <div class="option">
+      <div class="option-head">
+        <span class="badge">A</span>
+        <span class="option-title">大缩略图网格</span>
+        <span class="option-desc">图片平铺成大方块，一眼看清全部</span>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">剪贴板</span><span class="search">🔍 搜索</span></div>
+        <div class="tabbar"><span class="tab active">图片</span><span class="tab">文本</span><span class="tab">文件</span><span class="tab">全部</span></div>
+        <div class="panel-body">
+          <div class="grid-imgs">
+            <div class="thumb a"><span class="label">截图 2:33</span></div>
+            <div class="thumb b"><span class="label">Chrome 图</span></div>
+            <div class="thumb c"><span class="label">截图 11:29</span></div>
+            <div class="thumb d"><span class="label">设计稿.png</span></div>
+            <div class="thumb e"><span class="label">头像.jpg</span></div>
+            <div class="thumb f"><span class="label">图表.png</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 B -->
+    <div class="option">
+      <div class="option-head">
+        <span class="badge">B</span>
+        <span class="option-title">列表 + 中等预览</span>
+        <span class="option-desc">保留列表，缩略图放大到 56px</span>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">剪贴板</span><span class="search">🔍 搜索</span></div>
+        <div class="panel-body list">
+          <div class="row"><div class="thumb a"></div><div class="meta"><div class="name">Clipboard_Screenshot_1789615757.png</div><div class="sub">PNG · 拷贝于 11:29</div></div></div>
+          <div class="row"><div class="thumb b"></div><div class="meta"><div class="name">2026-09-17_11-29-15.png</div><div class="sub">PNG · 拷贝于 11:29</div></div></div>
+          <div class="row"><div class="thumb c"></div><div class="meta"><div class="name">Clipboard_Screenshot_1789615754.png</div><div class="sub">PNG · 拷贝于 11:29</div></div></div>
+          <div class="row"><div class="thumb d"></div><div class="meta"><div class="name">设计稿_v2.png</div><div class="sub">PNG · 拷贝于 11:28</div></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 C -->
+    <div class="option">
+      <div class="option-head">
+        <span class="badge">C</span>
+        <span class="option-title">悬停放大</span>
+        <span class="option-desc">列表紧凑，鼠标悬停弹出大图</span>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">剪贴板</span><span class="search">🔍 搜索</span></div>
+        <div class="hint">👇 把鼠标移到某一行上试试</div>
+        <div class="panel-body hoverlist">
+          <div class="row"><div class="thumb a"></div><div class="meta"><div class="name">Clipboard_Screenshot_1789615757.png</div><div class="sub">PNG · 11:29</div></div><div class="popover thumb a"></div></div>
+          <div class="row"><div class="thumb b"></div><div class="meta"><div class="name">2026-09-17_11-29-15.png</div><div class="sub">PNG · 11:29</div></div><div class="popover thumb b"></div></div>
+          <div class="row"><div class="thumb c"></div><div class="meta"><div class="name">Clipboard_Screenshot_1789615754.png</div><div class="sub">PNG · 11:29</div></div><div class="popover thumb c"></div></div>
+          <div class="row"><div class="thumb d"></div><div class="meta"><div class="name">设计稿_v2.png</div><div class="sub">PNG · 11:28</div></div><div class="popover thumb d"></div></div>
+          <div class="row"><div class="thumb e"></div><div class="meta"><div class="name">头像.jpg</div><div class="sub">JPG · 11:20</div></div><div class="popover thumb e"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 方案 D -->
+    <div class="option">
+      <div class="option-head">
+        <span class="badge">D</span>
+        <span class="option-title">分栏布局</span>
+        <span class="option-desc">左列表右大图，点哪个看哪个</span>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="title">剪贴板</span><span class="search">🔍 搜索</span></div>
+        <div class="split">
+          <div class="left">
+            <div class="row sel"><div class="thumb a"></div><div class="meta"><div class="name">截图 1789615757</div><div class="sub">11:29</div></div></div>
+            <div class="row"><div class="thumb b"></div><div class="meta"><div class="name">2026-09-17_11-29</div><div class="sub">11:29</div></div></div>
+            <div class="row"><div class="thumb c"></div><div class="meta"><div class="name">截图 1789615754</div><div class="sub">11:29</div></div></div>
+            <div class="row"><div class="thumb d"></div><div class="meta"><div class="name">设计稿_v2</div><div class="sub">11:28</div></div></div>
+            <div class="row"><div class="thumb e"></div><div class="meta"><div class="name">头像</div><div class="sub">11:20</div></div></div>
+          </div>
+          <div class="right">
+            <div class="bigimg thumb a"></div>
+            <div class="info">Clipboard_Screenshot_1789615757.png<br>1920 × 1080 · 拷贝于 11:29</div>
+            <div class="actions"><span class="btn">粘贴</span><span class="btn ghost">复制</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
