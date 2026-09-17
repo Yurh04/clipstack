@@ -11,7 +11,7 @@ public enum ClipboardItemType: String, Codable, Sendable, CaseIterable {
 }
 
 /// 一条剪贴板历史记录
-public struct ClipboardItem: Identifiable, Equatable, Sendable {
+public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
     public var id: Int64?
     /// 内容类型
     public var type: ClipboardItemType
