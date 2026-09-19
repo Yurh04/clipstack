@@ -2,6 +2,11 @@
 
 原生 macOS 剪贴板历史工具，使用 SwiftUI、AppKit 和 Swift Package Manager 构建。
 
+## 下载
+
+前往 [GitHub Releases](https://github.com/Yurh04/clipstack/releases/latest) 下载 DMG 或 ZIP。
+首版支持 Apple Silicon、macOS 14+，尚未经过 Developer ID 签名和 Apple 公证；安装说明见 [v0.1.0 发布说明](docs/releases/v0.1.0.md)。
+
 ## 当前功能
 
 - 自动记录文本、图片和文件路径，历史记录保存在本机。
@@ -38,6 +43,12 @@
 ```sh
 swift test
 swift build -c release --product ClipStack
+```
+
+打包 DMG、ZIP 和 SHA-256 校验文件（需要 Python 3，产物位于 `dist/releases/`）：
+
+```sh
+./script/package_release.sh 0.1.0 1
 ```
 
 单元测试覆盖存储、过滤、容量限制、敏感类型判断和点击行为映射；系统剪贴板、辅助功能及真实鼠标交互仍需在 macOS 上验证。
