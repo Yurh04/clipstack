@@ -7,37 +7,41 @@ public struct HistoryPanelView: View {
     @StateObject private var viewModel: HistoryPanelViewModel
     @FocusState private var searchFocused: Bool
 
-    public init(historyStore: HistoryStore, imageStorage: ImageStorage, onPaste: @escaping (ClipboardItem) -> Void) {
+    public init(
+        historyStore: HistoryStore,
+        imageStorage: ImageStorage,
+        onPaste: @escaping (ClipboardItem) -> Void,
+        onCopy: @escaping (ClipboardItem) -> Void
+    ) {
         _viewModel = StateObject(wrappedValue: HistoryPanelViewModel(
             historyStore: historyStore,
             imageStorage: imageStorage,
-            onPaste: onPaste
+            onPaste: onPaste,
+            onCopy: onCopy
         ))
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            // 顶部：搜索框 + 分类
             searchField
             categoryPicker
-
             Divider()
-
-            // 历史记录列表
             if viewModel.filteredItems.isEmpty {
                 emptyView
             } else {
                 historyList
             }
         }
-        .frame(width: 600, height: 500)
+        .frame(minWidth: 420, minHeight: 320)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        // 键盘导航：绑定在最外层，聚焦搜索框时方向键/回车仍可用
         .onKeyPress(.upArrow) {
+            searchFocused = false
             viewModel.moveSelectionUp()
             return .handled
         }
         .onKeyPress(.downArrow) {
+            searchFocused = false
             viewModel.moveSelectionDown()
             return .handled
         }
@@ -45,7 +49,12 @@ public struct HistoryPanelView: View {
             viewModel.pasteSelected()
             return .handled
         }
-        // ⌘1~4 切换分类（避免与搜索框输入冲突）
+        // 空格键：预览选中图片
+        .onKeyPress(.space) {
+            guard viewModel.canPreviewSelected else { return .ignored }
+            viewModel.previewSelected()
+            return .handled
+        }
         .onKeyPress(keys: ["1", "2", "3", "4"]) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
             switch press.key.character {
@@ -57,9 +66,38 @@ public struct HistoryPanelView: View {
             }
             return .handled
         }
+        .sheet(item: $viewModel.previewItem) { wrapper in
+            ImagePreviewView(
+                item: wrapper.item,
+                imageStorage: viewModel.imageStorage,
+                onCopy: { viewModel.copy(item: $0) }
+            )
+        }
+        // 注册为窗口级快捷键，避免搜索框焦点吞掉空格事件。
+        .overlay {
+            Button(action: { viewModel.previewSelected() }) {
+                EmptyView()
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .disabled(!viewModel.canPreviewSelected)
+            .opacity(0.001)
+            .frame(width: 1, height: 1)
+        }
+        .overlay {
+            Button(action: { viewModel.copySelected() }) {
+                EmptyView()
+            }
+            .keyboardShortcut("c", modifiers: [.command])
+            .disabled(!viewModel.canCopySelected || searchFocused)
+            .opacity(0.001)
+            .frame(width: 1, height: 1)
+        }
         .onAppear {
             viewModel.reload()
             searchFocused = true
+        }
+        .task {
+            await viewModel.refreshWhileVisible()
         }
     }
 
@@ -73,6 +111,11 @@ public struct HistoryPanelView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($searchFocused)
+                .onKeyPress(.space) {
+                    guard viewModel.canPreviewSelected else { return .ignored }
+                    viewModel.previewSelected()
+                    return .handled
+                }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -93,6 +136,10 @@ public struct HistoryPanelView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(
+                    KeyEquivalent(Character(categoryShortcut(category))),
+                    modifiers: [.command]
+                )
                 .foregroundColor(viewModel.selectedCategory == category ? .accentColor : .primary)
             }
 
@@ -109,23 +156,12 @@ public struct HistoryPanelView: View {
     private var historyList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(viewModel.filteredItems.indices, id: \.self) { index in
-                        HistoryItemRow(
-                            item: viewModel.filteredItems[index],
-                            isSelected: viewModel.selectedIndex == index,
-                            imageStorage: viewModel.imageStorage
-                        )
-                        .id(index)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            viewModel.selectedIndex = index
-                            viewModel.pasteSelected()
-                        }
-                    }
+                // 图片分类：大缩略图网格；其他分类：列表
+                if viewModel.selectedCategory == .image {
+                    imageGrid
+                } else {
+                    itemList
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
             }
             .onChange(of: viewModel.selectedIndex) {
                 if let newIndex = viewModel.selectedIndex {
@@ -135,6 +171,64 @@ public struct HistoryPanelView: View {
                 }
             }
         }
+    }
+
+    // 图片网格：3 列，大尺寸方块
+    private var imageGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())],
+            spacing: 10
+        ) {
+            ForEach(viewModel.filteredItems.indices, id: \.self) { index in
+                ImageGridCell(
+                    item: viewModel.filteredItems[index],
+                    isSelected: viewModel.selectedIndex == index,
+                    imageStorage: viewModel.imageStorage
+                )
+                .id(index)
+                .onTapGesture {
+                    searchFocused = false
+                    viewModel.selectedIndex = index
+                    // 直接点击图片打开预览，避免依赖搜索框焦点和空格事件。
+                    viewModel.previewSelected()
+                }
+            }
+        }
+        .padding(10)
+    }
+
+    // 文本/文件列表
+    private var itemList: some View {
+        LazyVStack(spacing: 2) {
+            ForEach(viewModel.filteredItems.indices, id: \.self) { index in
+                HistoryItemRow(
+                    item: viewModel.filteredItems[index],
+                    isSelected: viewModel.selectedIndex == index,
+                    imageStorage: viewModel.imageStorage,
+                    onTap: {
+                        searchFocused = false
+                        viewModel.selectedIndex = index
+                        switch ClipboardItemTapBehavior.action(for: viewModel.filteredItems[index]) {
+                        case .select:
+                            break
+                        case .preview:
+                            // 图片记录直接打开预览，避免依赖空格键焦点。
+                            viewModel.previewSelected()
+                        case .paste:
+                            break
+                        }
+                    },
+                    onCopy: {
+                        searchFocused = false
+                        viewModel.selectedIndex = index
+                        viewModel.copy(item: viewModel.filteredItems[index])
+                    }
+                )
+                .id(index)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
     }
 
     private var emptyView: some View {
@@ -194,23 +288,62 @@ final class HistoryPanelViewModel: ObservableObject {
     }
     @Published var selectedIndex: Int? = 0
     @Published var filteredItems: [ClipboardItem] = []
+    @Published var previewItem: PreviewWrapper? = nil  // 空格键触发的大图预览
 
     let historyStore: HistoryStore
     let imageStorage: ImageStorage
     let onPaste: (ClipboardItem) -> Void
+    let onCopy: (ClipboardItem) -> Void
 
     private var allItems: [ClipboardItem] = []
 
-    init(historyStore: HistoryStore, imageStorage: ImageStorage, onPaste: @escaping (ClipboardItem) -> Void) {
+    init(
+        historyStore: HistoryStore,
+        imageStorage: ImageStorage,
+        onPaste: @escaping (ClipboardItem) -> Void,
+        onCopy: @escaping (ClipboardItem) -> Void
+    ) {
         self.historyStore = historyStore
         self.imageStorage = imageStorage
         self.onPaste = onPaste
+        self.onCopy = onCopy
     }
 
     func reload() {
         do {
             allItems = try historyStore.all()
             applyFilter()
+        } catch {
+            print("加载历史记录失败: \(error)")
+        }
+    }
+
+    /// 面板保持打开时也同步外部应用的新剪贴板内容。
+    /// 仅在记录集合发生变化时刷新，避免每次轮询都重置选中项。
+    func refreshWhileVisible() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            reloadIfChanged()
+        }
+    }
+
+    private func reloadIfChanged() {
+        do {
+            let latestItems = try historyStore.all()
+            guard latestItems != allItems else { return }
+            let selectedID = selectedIndex.flatMap { index in
+                filteredItems.indices.contains(index) ? filteredItems[index].id : nil
+            }
+            let previousIndex = selectedIndex
+            allItems = latestItems
+            applyFilter()
+            if let selectedID,
+               let newIndex = filteredItems.firstIndex(where: { $0.id == selectedID }) {
+                selectedIndex = newIndex
+            } else if let previousIndex, !filteredItems.isEmpty {
+                selectedIndex = min(previousIndex, filteredItems.count - 1)
+            }
         } catch {
             print("加载历史记录失败: \(error)")
         }
@@ -237,6 +370,32 @@ final class HistoryPanelViewModel: ObservableObject {
     func pasteSelected() {
         guard let index = selectedIndex, filteredItems.indices.contains(index) else { return }
         onPaste(filteredItems[index])
+    }
+
+    func copySelected() {
+        guard let index = selectedIndex, filteredItems.indices.contains(index) else { return }
+        onCopy(filteredItems[index])
+    }
+
+    func copy(item: ClipboardItem) {
+        onCopy(item)
+    }
+
+    func previewSelected() {
+        guard let index = selectedIndex,
+              filteredItems.indices.contains(index),
+              filteredItems[index].type == .image else { return }
+        previewItem = PreviewWrapper(item: filteredItems[index])
+    }
+
+    var canPreviewSelected: Bool {
+        guard let index = selectedIndex, filteredItems.indices.contains(index) else { return false }
+        return filteredItems[index].type == .image
+    }
+
+    var canCopySelected: Bool {
+        guard let index = selectedIndex else { return false }
+        return filteredItems.indices.contains(index)
     }
 
     /// 组合分类 + 搜索过滤（≤500 条，内存过滤足够快）

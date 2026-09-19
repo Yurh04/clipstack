@@ -6,41 +6,57 @@ struct HistoryItemRow: View {
     let item: ClipboardItem
     let isSelected: Bool
     let imageStorage: ImageStorage
+    let onTap: () -> Void
+    let onCopy: (() -> Void)?
+
+    @State private var thumbnail: NSImage? = nil
 
     var body: some View {
         HStack(spacing: 12) {
-            // 左侧图标或缩略图
-            leadingIcon
-
-            // 中间内容预览
-            VStack(alignment: .leading, spacing: 4) {
-                Text(previewText)
-                    .font(.system(size: 13))
-                    .lineLimit(2)
-                    .foregroundColor(.primary)
-
-                // 来源应用和时间
-                HStack(spacing: 8) {
-                    if let app = item.sourceApp {
-                        Text(app)
+            HStack(spacing: 12) {
+                leadingIcon
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(previewText)
+                        .font(.system(size: 13))
+                        .lineLimit(2)
+                        .foregroundColor(.primary)
+                    HStack(spacing: 8) {
+                        if let app = item.sourceApp {
+                            Text(app)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                        }
+                        Text(timeAgo)
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
-                    Text(timeAgo)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
                 }
+                Spacer()
+                typeLabel
             }
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onTap)
 
-            Spacer()
-
-            // 右侧类型标签
-            typeLabel
+            if (item.type == .file || item.type == .text), let onCopy {
+                Button(action: onCopy) {
+                    Label("复制", systemImage: "doc.on.doc")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(item.type == .file ? "复制文件到系统剪贴板" : "复制文本到系统剪贴板")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
         .cornerRadius(6)
+        .task(id: item.id) {
+            // 异步加载图片缩略图
+            if item.type == .image {
+                thumbnail = await loadThumbnail()
+            }
+        }
     }
 
     // MARK: - 子视图
@@ -52,28 +68,34 @@ struct HistoryItemRow: View {
             Image(systemName: "text.alignleft")
                 .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
 
         case .image:
-            if let imageData = try? imageStorage.load(path: item.content),
-               let nsImage = NSImage(data: imageData) {
-                Image(nsImage: nsImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 40, height: 40)
-                    .cornerRadius(4)
-            } else {
-                Image(systemName: "photo")
-                    .font(.system(size: 20))
-                    .foregroundColor(.secondary)
-                    .frame(width: 40, height: 40)
+            Group {
+                if let img = thumbnail {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 44, height: 44)
+                        .cornerRadius(4)
+                        .clipped()
+                } else {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.secondary.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(.system(size: 16))
+                                .foregroundColor(.secondary)
+                        )
+                }
             }
 
         case .file:
-            Image(systemName: "doc")
+            Image(systemName: "doc.fill")
                 .font(.system(size: 20))
                 .foregroundColor(.secondary)
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
         }
     }
 
@@ -115,14 +137,34 @@ struct HistoryItemRow: View {
 
     private var timeAgo: String {
         let seconds = Date().timeIntervalSince(item.createdAt)
-        if seconds < 60 {
-            return "刚刚"
-        } else if seconds < 3600 {
-            return "\(Int(seconds / 60)) 分钟前"
-        } else if seconds < 86400 {
-            return "\(Int(seconds / 3600)) 小时前"
-        } else {
-            return "\(Int(seconds / 86400)) 天前"
-        }
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟前" }
+        if seconds < 86400 { return "\(Int(seconds / 3600)) 小时前" }
+        return "\(Int(seconds / 86400)) 天前"
+    }
+
+    // MARK: - 异步加载
+
+    private func loadThumbnail() async -> NSImage? {
+        let storage = imageStorage
+        let path = item.content
+        return await Task.detached(priority: .utility) {
+            guard let data = try? storage.load(path: path),
+                  let image = NSImage(data: data) else { return nil }
+            let thumb = NSImage(size: NSSize(width: 44, height: 44))
+            thumb.lockFocus()
+            let srcSize = image.size
+            let scale = max(44 / srcSize.width, 44 / srcSize.height)
+            let drawSize = NSSize(width: srcSize.width * scale, height: srcSize.height * scale)
+            let drawRect = NSRect(
+                x: (44 - drawSize.width) / 2,
+                y: (44 - drawSize.height) / 2,
+                width: drawSize.width,
+                height: drawSize.height
+            )
+            image.draw(in: drawRect)
+            thumb.unlockFocus()
+            return thumb
+        }.value
     }
 }

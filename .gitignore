@@ -16,3 +16,9 @@
 *.app
 *.dSYM.zip
 *.dSYM
+
+# 本地工具配置和发布产物
+.codex/
+dist/
+.env
+.env.*

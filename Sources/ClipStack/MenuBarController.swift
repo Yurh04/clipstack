@@ -23,7 +23,7 @@ public final class MenuBarController {
     /// 显示菜单栏图标
     public func show() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "ClipStack")
+        item.button?.image = ClipStackIcon.menuBarImage()
         item.button?.action = #selector(statusItemClicked)
         item.button?.target = self
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])

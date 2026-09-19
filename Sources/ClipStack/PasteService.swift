@@ -40,7 +40,8 @@ public final class PasteService {
     }
 
     /// 将历史项粘贴到记住的应用（激活 → 写剪贴板 → 模拟 Cmd+V）
-    public func paste(item: ClipboardItem) {
+    @discardableResult
+    public func paste(item: ClipboardItem) -> Bool {
         // 1. 重新激活目标应用
         if let app = rememberedApp {
             app.activate()
@@ -48,29 +49,90 @@ public final class PasteService {
         }
 
         // 2. 写回系统剪贴板
+        guard copyToPasteboard(item: item) else { return false }
+
+        // 3. 模拟 Cmd+V
+        simulatePaste()
+        return true
+    }
+
+    /// 只写回系统剪贴板，不切换应用，也不模拟粘贴。
+    /// 用于历史记录选中后的 Cmd+C。
+    @discardableResult
+    public func copyToPasteboard(item: ClipboardItem) -> Bool {
         let pb = NSPasteboard.general
-        pb.clearContents()
+        // 先完成所有可能失败的读取，再动系统剪贴板。
+        let payload: PasteboardPayload
 
         switch item.type {
         case .text:
-            pb.setString(item.content, forType: .string)
+            payload = .text(item.content)
 
         case .image:
             guard let imageData = try? imageStorage.load(path: item.content),
                   let image = NSImage(data: imageData) else {
                 print("❌ PasteService: 无法加载图片 \(item.content)")
-                return
+                return false
             }
-            pb.writeObjects([image])
+            payload = .image(image)
 
         case .file:
             let paths = item.content.split(separator: "\n").map(String.init)
+            guard !paths.isEmpty else { return false }
             let urls = paths.map { URL(fileURLWithPath: $0) }
-            pb.writeObjects(urls as [NSURL])
+            payload = .files(urls)
         }
 
-        // 3. 模拟 Cmd+V
-        simulatePaste()
+        let previous = snapshot(of: pb)
+        let previousChangeCount = pb.changeCount
+        pb.clearContents()
+
+        let didWrite: Bool
+        switch payload {
+        case .text(let value):
+            didWrite = pb.setString(value, forType: .string)
+        case .image(let image):
+            didWrite = pb.writeObjects([image])
+        case .files(let urls):
+            didWrite = pb.writeObjects(urls as [NSURL])
+        }
+
+        guard didWrite, pb.changeCount != previousChangeCount else {
+            restore(previous, to: pb)
+            return false
+        }
+        return true
+    }
+
+    private enum PasteboardPayload {
+        case text(String)
+        case image(NSImage)
+        case files([URL])
+    }
+
+    private typealias PasteboardSnapshot = [[(NSPasteboard.PasteboardType, Data)]]
+
+    private func snapshot(of pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        pasteboard.pasteboardItems?.map { item in
+            item.types.compactMap { type in
+                guard let data = item.data(forType: type) else { return nil }
+                return (type, data)
+            }
+        } ?? []
+    }
+
+    private func restore(_ snapshot: PasteboardSnapshot, to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        let items = snapshot.map { entries -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in entries {
+                item.setData(data, forType: type)
+            }
+            return item
+        }
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
+        }
     }
 
     // MARK: - 按键模拟
