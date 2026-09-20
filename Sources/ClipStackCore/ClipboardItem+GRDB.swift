@@ -15,6 +15,7 @@ extension ClipboardItem: FetchableRecord, MutablePersistableRecord {
         static let sourceApp = Column("sourceApp")
         static let createdAt = Column("createdAt")
         static let isSensitive = Column("isSensitive")
+        static let contentHash = Column("contentHash")
     }
 
     /// 插入后回填自增主键

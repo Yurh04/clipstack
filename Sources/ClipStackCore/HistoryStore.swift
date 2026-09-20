@@ -52,19 +52,54 @@ public final class HistoryStore: Sendable {
             try db.create(index: "idx_createdAt", on: ClipboardItem.databaseTableName, columns: ["createdAt"])
         }
 
+        migrator.registerMigration("v2") { db in
+            try db.alter(table: ClipboardItem.databaseTableName) { t in
+                t.add(column: "contentHash", .text)
+            }
+            // 图片按内容哈希全局去重
+            try db.create(
+                index: "idx_imageContentHash",
+                on: ClipboardItem.databaseTableName,
+                columns: ["contentHash"]
+            )
+        }
+
         try migrator.migrate(dbQueue)
     }
 
     // MARK: - 增 / 查 / 删
 
     /// 保存一条剪贴板记录。
-    /// 若与最新一条内容+类型完全相同，则更新该条的时间戳而非新建。
+    /// - 图片：只要 contentHash 已存在，就更新已有记录的时间戳，避免重复图片占空间。
+    /// - 文本/文件：若与最新一条内容+类型完全相同，则更新该条的时间戳而非新建。
     @discardableResult
     public func save(_ item: ClipboardItem) throws -> ClipboardItem {
         try dbQueue.write { db in
             var mutable = item
 
-            // 去重逻辑：查最新一条
+            if item.type == .image, let contentHash = item.contentHash {
+                if let existing = try ClipboardItem
+                    .filter(ClipboardItem.Columns.type == ClipboardItemType.image.rawValue)
+                    .filter(ClipboardItem.Columns.contentHash == contentHash)
+                    .order(ClipboardItem.Columns.createdAt.desc)
+                    .limit(1)
+                    .fetchOne(db) {
+                    var updated = existing
+                    updated.createdAt = item.createdAt
+                    let existingFileExists = FileManager.default.fileExists(atPath: existing.content)
+                    let newFileExists = FileManager.default.fileExists(atPath: item.content)
+                    if !existingFileExists && newFileExists {
+                        updated.content = item.content
+                    }
+                    if let sourceApp = item.sourceApp {
+                        updated.sourceApp = sourceApp
+                    }
+                    try updated.update(db)
+                    return updated
+                }
+            }
+
+            // 文本和普通文件保留原来的连续重复去重逻辑。
             if let latest = try ClipboardItem
                 .order(ClipboardItem.Columns.createdAt.desc)
                 .limit(1)
@@ -80,6 +115,23 @@ public final class HistoryStore: Sendable {
                 // 新记录
                 try mutable.insert(db)
                 return mutable
+            }
+        }
+    }
+
+    /// 为旧版本图片记录补齐内容哈希。
+    public func backfillImageHashes(with imageStorage: ImageStorage) throws {
+        try dbQueue.write { db in
+            let items = try ClipboardItem
+                .filter(ClipboardItem.Columns.type == ClipboardItemType.image.rawValue)
+                .filter(ClipboardItem.Columns.contentHash == nil)
+                .fetchAll(db)
+
+            for var item in items {
+                let url = URL(fileURLWithPath: item.content)
+                guard let data = try? Data(contentsOf: url) else { continue }
+                item.contentHash = ImageStorage.sha256Hex(data)
+                try item.update(db)
             }
         }
     }
@@ -142,5 +194,13 @@ public final class HistoryStore: Sendable {
 
             return oldest
         }
+    }
+
+    /// 执行容量限制，并清理 images 目录中已经没有数据库记录引用的图片。
+    public func enforceCapacityAndCleanupImages(imageStorage: ImageStorage) throws {
+        try enforceCapacity()
+        let items = try all()
+        let validPaths = Set(items.filter { $0.type == .image }.map(\.content))
+        try imageStorage.deleteUnreferencedFiles(validPaths: validPaths)
     }
 }

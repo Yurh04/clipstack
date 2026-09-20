@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import ClipStackCore
 
 /// 历史面板主视图
@@ -6,12 +8,28 @@ import ClipStackCore
 public struct HistoryPanelView: View {
     @StateObject private var viewModel: HistoryPanelViewModel
     @FocusState private var searchFocused: Bool
+    @State private var isWindowPinned = true
+
+    private let onPinnedChange: (Bool) -> Void
+
+    fileprivate static let acceptedDropTypes: [UTType] = [
+        .fileURL,
+        .image,
+        .png,
+        .tiff,
+        .jpeg,
+        .gif,
+        .utf8PlainText,
+        .rtf,
+        .text
+    ]
 
     public init(
         historyStore: HistoryStore,
         imageStorage: ImageStorage,
         onPaste: @escaping (ClipboardItem) -> Void,
-        onCopy: @escaping (ClipboardItem) -> Void
+        onCopy: @escaping (ClipboardItem) -> Void,
+        onPinnedChange: @escaping (Bool) -> Void = { _ in }
     ) {
         _viewModel = StateObject(wrappedValue: HistoryPanelViewModel(
             historyStore: historyStore,
@@ -19,6 +37,7 @@ public struct HistoryPanelView: View {
             onPaste: onPaste,
             onCopy: onCopy
         ))
+        self.onPinnedChange = onPinnedChange
     }
 
     public var body: some View {
@@ -35,6 +54,15 @@ public struct HistoryPanelView: View {
         .frame(minWidth: 420, minHeight: 320)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onDrop(
+            of: Self.acceptedDropTypes,
+            delegate: ClipboardDropDelegate(viewModel: viewModel)
+        )
+        .overlay {
+            if viewModel.isDropTargeted {
+                dropOverlay
+            }
+        }
         .onKeyPress(.upArrow) {
             searchFocused = false
             viewModel.moveSelectionUp()
@@ -116,9 +144,24 @@ public struct HistoryPanelView: View {
                     viewModel.previewSelected()
                     return .handled
                 }
+
+            Button(action: toggleWindowPinned) {
+                Image(systemName: isWindowPinned ? "pin.fill" : "pin.slash")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .help(isWindowPinned ? "取消窗口置顶" : "将窗口固定到最前")
+            .accessibilityLabel(isWindowPinned ? "取消窗口置顶" : "将窗口固定到最前")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private func toggleWindowPinned() {
+        isWindowPinned.toggle()
+        onPinnedChange(isWindowPinned)
     }
 
     private var categoryPicker: some View {
@@ -243,6 +286,25 @@ public struct HistoryPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var dropOverlay: some View {
+        ZStack {
+            Color.accentColor.opacity(0.12)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.accentColor, lineWidth: 3)
+            VStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.system(size: 42))
+                Text("松开以添加到对应分类")
+                    .font(.system(size: 15, weight: .semibold))
+                Text("支持文本、图片和文件")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .foregroundColor(.accentColor)
+        }
+        .allowsHitTesting(false)
+    }
+
     // MARK: - 辅助方法
 
     private func categoryLabel(_ category: ClipboardCategory) -> String {
@@ -289,11 +351,13 @@ final class HistoryPanelViewModel: ObservableObject {
     @Published var selectedIndex: Int? = 0
     @Published var filteredItems: [ClipboardItem] = []
     @Published var previewItem: PreviewWrapper? = nil  // 空格键触发的大图预览
+    @Published var isDropTargeted = false
 
     let historyStore: HistoryStore
     let imageStorage: ImageStorage
     let onPaste: (ClipboardItem) -> Void
     let onCopy: (ClipboardItem) -> Void
+    let dropImporter: ClipboardDropImporter
 
     private var allItems: [ClipboardItem] = []
 
@@ -307,6 +371,7 @@ final class HistoryPanelViewModel: ObservableObject {
         self.imageStorage = imageStorage
         self.onPaste = onPaste
         self.onCopy = onCopy
+        self.dropImporter = ClipboardDropImporter(store: historyStore, imageStorage: imageStorage)
     }
 
     func reload() {
@@ -315,6 +380,29 @@ final class HistoryPanelViewModel: ObservableObject {
             applyFilter()
         } catch {
             print("加载历史记录失败: \(error)")
+        }
+    }
+
+    func importDroppedItems(_ providers: [NSItemProvider]) {
+        isDropTargeted = false
+        guard !providers.isEmpty else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let importedItems = await self.dropImporter.importProviders(providers)
+            guard !importedItems.isEmpty else { return }
+
+            self.searchText = ""
+            let importedTypes = Set(importedItems.map(\.type))
+            if importedTypes.count == 1,
+               let firstType = importedTypes.first,
+               let category = category(for: firstType) {
+                self.selectedCategory = category
+            } else {
+                self.selectedCategory = .all
+            }
+            self.reload()
+            self.selectedIndex = 0
         }
     }
 
@@ -398,6 +486,14 @@ final class HistoryPanelViewModel: ObservableObject {
         return filteredItems.indices.contains(index)
     }
 
+    private func category(for itemType: ClipboardItemType) -> ClipboardCategory? {
+        switch itemType {
+        case .text: return .text
+        case .image: return .image
+        case .file: return .file
+        }
+    }
+
     /// 组合分类 + 搜索过滤（≤500 条，内存过滤足够快）
     private func applyFilter() {
         var items = allItems
@@ -429,4 +525,33 @@ enum ClipboardCategory: CaseIterable {
     case text
     case image
     case file
+}
+
+@MainActor
+private final class ClipboardDropDelegate: NSObject, DropDelegate {
+    private weak var viewModel: HistoryPanelViewModel?
+
+    init(viewModel: HistoryPanelViewModel) {
+        self.viewModel = viewModel
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        !info.itemProviders(for: HistoryPanelView.acceptedDropTypes).isEmpty
+    }
+
+    func dropEntered(info: DropInfo) {
+        viewModel?.isDropTargeted = true
+    }
+
+    func dropExited(info: DropInfo) {
+        viewModel?.isDropTargeted = false
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: HistoryPanelView.acceptedDropTypes)
+        viewModel?.isDropTargeted = false
+        guard !providers.isEmpty else { return false }
+        viewModel?.importDroppedItems(providers)
+        return true
+    }
 }

@@ -1,111 +1,180 @@
 import SwiftUI
+import AppKit
 import ClipStackCore
 
-/// 用于 .sheet(item:) 的包装，保证 id 非 nil
+/// 用于 SwiftUI `.sheet(item:)` 的 Identifiable 包装。
 struct PreviewWrapper: Identifiable {
     let id = UUID()
     let item: ClipboardItem
+
+    init(item: ClipboardItem) {
+        self.item = item
+    }
 }
 
-/// 图片全屏预览视图（空格键触发）
+/// 用于 .sheet(item:) 的包装，保证 id 非 nil
+struct ImagePreviewSheet: View {
+    let item: ClipboardItem
+    let imageStorage: ImageStorage
+    let onCopy: (ClipboardItem) -> Void
+
+    var body: some View {
+        ImagePreviewView(item: item, imageStorage: imageStorage, onCopy: onCopy)
+    }
+}
+
+/// 大图预览：点击图片缩略图后弹出，支持缩放、复制、OCR 文字选择和中键拖拽平移。
 struct ImagePreviewView: View {
     let item: ClipboardItem
     let imageStorage: ImageStorage
     let onCopy: (ClipboardItem) -> Void
+
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage? = nil
     @State private var zoom: CGFloat = 1
+    @State private var pan: CGSize = .zero
+    @State private var showCopiedToast = false
+
+    private let minimumZoom: CGFloat = 1
+    private let maximumZoom: CGFloat = 4
+    private let buttonZoomStep: CGFloat = 0.25
 
     var body: some View {
         VStack(spacing: 0) {
             // 顶部工具栏
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    if let app = item.sourceApp {
-                        Text(app)
-                            .font(.system(size: 13, weight: .medium))
+                    Text("图片预览")
+                        .font(.headline)
+                    if let date = formattedDate {
+                        Text(date)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-                    Text(formattedDate)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
                 }
                 Spacer()
                 HStack(spacing: 6) {
-                    Button("复制") { onCopy(item) }
-                        .keyboardShortcut("c", modifiers: [.command])
-                    Button("−") { zoom = max(1, zoom - 0.25) }
+                    Button("复制") { copyImage() }
+                    Button("−") { adjustZoom(by: -buttonZoomStep) }
                     Text("\(Int(zoom * 100))%")
                         .monospacedDigit()
                         .frame(minWidth: 44)
-                    Button("+") { zoom = min(4, zoom + 0.25) }
-                    Button("适应") { zoom = 1 }
+                    Button("+") { adjustZoom(by: buttonZoomStep) }
+                    Button("适应") { resetView() }
                 }
                 .buttonStyle(.bordered)
                 Button(action: { dismiss() }) {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 22))
+                        .font(.title2)
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.escape, modifiers: [])
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(NSColor.windowBackgroundColor))
 
             Divider()
 
-            // 图片区域
-            if let img = image {
-                GeometryReader { proxy in
-                    let viewportWidth = max(1, proxy.size.width - 32)
-                    let viewportHeight = max(1, proxy.size.height - 32)
-                    let fitScale = min(
-                        viewportWidth / max(img.size.width, 1),
-                        viewportHeight / max(img.size.height, 1)
-                    )
-                    // 图片本身严格按同一个比例缩放；视口不足时由 ScrollView
-                    // 提供滚动区域，不能分别把宽高撑满，否则会拉伸变形。
-                    let imageWidth = max(1, img.size.width * fitScale * zoom)
-                    let imageHeight = max(1, img.size.height * fitScale * zoom)
+            // 图片预览区域
+            ZStack {
+                Color.black
 
-                    ScrollView([.horizontal, .vertical]) {
-                        Image(nsImage: img)
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: imageWidth, height: imageHeight)
-                            .frame(
-                                minWidth: viewportWidth,
-                                minHeight: viewportHeight,
-                                alignment: .center
-                            )
-                            .padding(16)
+                if let image {
+                    OCRImageCanvasView(
+                        image: image,
+                        zoom: $zoom,
+                        pan: $pan,
+                        zoomRange: minimumZoom...maximumZoom,
+                        onCopyImage: { copyImage() },
+                        onTextCopied: { _ in showCopiedToast("文字已复制") }
+                    )
+
+                    VStack {
+                        Spacer()
+                        Text("左键框选图片文字，⌘C 复制 · 滚轮缩放 · 按住滚轮拖动平移")
+                            .font(.caption)
+                            .foregroundStyle(.white.opacity(0.72))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.45), in: Capsule())
+                            .padding(.bottom, 12)
                     }
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.large)
+                        .colorInvert()
+                        .brightness(1)
                 }
-            } else {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if showCopiedToast {
+                    VStack {
+                        Spacer()
+                        Text("已复制到剪贴板")
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.black.opacity(0.75))
+                            )
+                            .foregroundColor(.white)
+                            .padding(.bottom, 48)
+                    }
+                    .transition(.opacity)
+                }
             }
         }
-        .frame(width: 900, height: 700)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(minWidth: 640, minHeight: 480)
         .task {
-            image = await loadFullImage()
+            if image == nil {
+                image = await loadFullImage()
+            }
         }
     }
 
-    private var formattedDate: String {
+    private var formattedDate: String? {
         let formatter = DateFormatter()
-        formatter.dateStyle = .short
+        formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: item.createdAt)
+    }
+
+    private func adjustZoom(by delta: CGFloat) {
+        zoom = min(maximumZoom, max(minimumZoom, zoom + delta))
+    }
+
+    private func resetView() {
+        zoom = minimumZoom
+        pan = .zero
+    }
+
+    private func showCopiedToast(_ message: String) {
+        withAnimation(.easeOut(duration: 0.15)) {
+            showCopiedToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation(.easeIn(duration: 0.2)) {
+                showCopiedToast = false
+            }
+        }
+    }
+
+    private func copyImage() {
+        onCopy(item)
+        showCopiedToast("图片已复制")
     }
 
     private func loadFullImage() async -> NSImage? {
         let storage = imageStorage
         let path = item.content
         return await Task.detached(priority: .userInitiated) {
-            guard let data = try? storage.load(path: path) else { return nil }
-            return NSImage(data: data)
+            guard let data = try? storage.load(path: path),
+                  let nsImage = NSImage(data: data) else {
+                return nil
+            }
+            return nsImage
         }.value
     }
 }

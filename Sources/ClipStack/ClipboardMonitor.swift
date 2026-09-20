@@ -65,22 +65,25 @@ public final class ClipboardMonitor {
             return  // 跳过密码等敏感内容
         }
 
-        // 解析剪贴板内容
-        if let item = parseClipboardItem(from: pb) {
-            do {
+        let items = parseClipboardItems(from: pb)
+        guard !items.isEmpty else { return }
+
+        do {
+            for item in items {
                 try store.save(item)
-                try store.enforceCapacity()
-            } catch {
-                print("❌ ClipboardMonitor: 存储失败 - \(error)")
             }
+            try store.enforceCapacityAndCleanupImages(imageStorage: imageStorage)
+        } catch {
+            print("❌ ClipboardMonitor: 存储失败 - \(error)")
         }
     }
 
-    private func parseClipboardItem(from pb: NSPasteboard) -> ClipboardItem? {
+    private func parseClipboardItems(from pb: NSPasteboard) -> [ClipboardItem] {
         let sourceApp = NSWorkspace.shared.frontmostApplication?.localizedName
 
         // 1. 文件优先于图片：Finder 复制文件时可能同时提供文件图标的
-        // PNG/TIFF 表示，必须先识别 fileURL，避免把任意格式文件记成图片。
+        // PNG/TIFF 表示，必须先识别 fileURL。图片文件统一归入“图片”，
+        // 但直接引用原路径，不复制文件；非图片文件仍归入“文件”。
         if let objects = pb.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
@@ -94,47 +97,72 @@ public final class ClipboardMonitor {
                 }
                 return nil
             }
+
             if !fileURLs.isEmpty {
-                // 多个文件用换行分隔存储路径
-                let paths = fileURLs.map(\.path).joined(separator: "\n")
-                return ClipboardItem(
-                    type: .file,
-                    content: paths,
-                    sourceApp: sourceApp,
-                    createdAt: Date()
-                )
+                let imageItems = fileURLs
+                    .filter(ImageFileClassifier.isImageFile)
+                    .map { makeLocalImageItem(url: $0, sourceApp: sourceApp) }
+
+                let otherFileURLs = fileURLs.filter { !ImageFileClassifier.isImageFile(at: $0) }
+                let fileItem: ClipboardItem?
+                if otherFileURLs.isEmpty {
+                    fileItem = nil
+                } else {
+                    // 多个非图片文件用换行分隔存储路径
+                    let paths = otherFileURLs.map(\.path).joined(separator: "\n")
+                    fileItem = ClipboardItem(
+                        type: .file,
+                        content: paths,
+                        sourceApp: sourceApp,
+                        createdAt: Date()
+                    )
+                }
+
+                return imageItems + [fileItem].compactMap { $0 }
             }
         }
 
-        // 2. 图片（复制图片时也可能同时带文本描述）。
+        // 2. 图片内容（复制图片时也可能同时带文本描述）。
         // 优先读取剪贴板提供的原始 PNG，避免先转成 TIFF 时丢失 Retina
         // 像素密度；只有没有 PNG 时才回退到 TIFF 转 PNG。
         if let pngData = imageData(from: pb) {
             do {
-                let imagePath = try imageStorage.save(imageData: pngData)
-                return ClipboardItem(
+                let imagePath = try imageStorage.save(pngData: pngData)
+                return [ClipboardItem(
                     type: .image,
                     content: imagePath,
                     sourceApp: sourceApp,
-                    createdAt: Date()
-                )
+                    createdAt: Date(),
+                    contentHash: ImageStorage.sha256Hex(pngData)
+                )]
             } catch {
                 print("❌ ClipboardMonitor: 图片落盘失败 - \(error)")
-                return nil
+                return []
             }
         }
 
         // 3. 文本
         if let text = pb.string(forType: .string), !text.isEmpty {
-            return ClipboardItem(
+            return [ClipboardItem(
                 type: .text,
                 content: text,
                 sourceApp: sourceApp,
                 createdAt: Date()
-            )
+            )]
         }
 
-        return nil
+        return []
+    }
+
+    private func makeLocalImageItem(url: URL, sourceApp: String?) -> ClipboardItem {
+        let data = try? Data(contentsOf: url)
+        return ClipboardItem(
+            type: .image,
+            content: url.path,
+            sourceApp: sourceApp,
+            createdAt: Date(),
+            contentHash: data.map(ImageStorage.sha256Hex)
+        )
     }
 
     private func imageData(from pasteboard: NSPasteboard) -> Data? {

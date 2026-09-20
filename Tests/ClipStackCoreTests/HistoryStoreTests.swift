@@ -119,6 +119,92 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(hits.map(\.content), ["report.pdf"], "类型与搜索条件应同时生效")
     }
 
+    func testImageWithSameContentHashDeduplicatesEvenWhenNotLatest() throws {
+        let store = try HistoryStore.inMemory()
+        try store.save(ClipboardItem(type: .text, content: "between", createdAt: Date(timeIntervalSince1970: 2000)))
+        try store.save(ClipboardItem(
+            type: .image,
+            content: "/images/a.png",
+            createdAt: Date(timeIntervalSince1970: 1000),
+            contentHash: "hash-a"
+        ))
+        try store.save(ClipboardItem(type: .text, content: "after", createdAt: Date(timeIntervalSince1970: 3000)))
+
+        let saved = try store.save(ClipboardItem(
+            type: .image,
+            content: "/images/a-copy.png",
+            createdAt: Date(timeIntervalSince1970: 4000),
+            contentHash: "hash-a"
+        ))
+
+        let all = try store.all()
+        XCTAssertEqual(all.count, 3, "相同哈希图片应复用已有记录，不新建")
+        XCTAssertEqual(saved.content, "/images/a.png", "已有文件仍存在时应继续引用原路径")
+        XCTAssertEqual(all.first?.content, "/images/a.png", "重复图片应更新到最新位置")
+    }
+
+    func testImageHashDeduplicationReplacesMissingPathWithAvailablePath() throws {
+        let store = try HistoryStore.inMemory()
+        try store.save(ClipboardItem(
+            type: .image,
+            content: "/images/missing.png",
+            createdAt: Date(timeIntervalSince1970: 1000),
+            contentHash: "hash-a"
+        ))
+
+        let saved = try store.save(ClipboardItem(
+            type: .image,
+            content: Bundle(for: HistoryStoreTests.self).bundlePath,
+            createdAt: Date(timeIntervalSince1970: 2000),
+            contentHash: "hash-a"
+        ))
+
+        XCTAssertEqual(saved.content, Bundle(for: HistoryStoreTests.self).bundlePath)
+    }
+
+    func testBackfillImageHashes() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let imageStorage = ImageStorage(storageDirectory: tempDir)
+        let imagePath = try imageStorage.save(pngData: Data("image-data".utf8))
+        let expectedHash = ImageStorage.sha256Hex(Data("image-data".utf8))
+        let store = try HistoryStore.inMemory()
+        try store.save(ClipboardItem(type: .image, content: imagePath))
+
+        try store.backfillImageHashes(with: imageStorage)
+
+        XCTAssertEqual(try store.all().first?.contentHash, expectedHash)
+    }
+
+    func testEnforceCapacityAndCleanupImagesDeletesOrphans() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let imageStorage = ImageStorage(storageDirectory: tempDir)
+        let referencedImage = try imageStorage.save(pngData: Data("referenced".utf8))
+        let orphanImage = tempDir.appendingPathComponent("orphan.png")
+        try Data("orphan".utf8).write(to: orphanImage)
+
+        let store = try HistoryStore.inMemory(maxItems: 1)
+        try store.save(ClipboardItem(type: .text, content: "old", createdAt: Date(timeIntervalSince1970: 1000)))
+        try store.save(ClipboardItem(
+            type: .image,
+            content: referencedImage,
+            createdAt: Date(timeIntervalSince1970: 2000),
+            contentHash: "hash"
+        ))
+
+        try store.enforceCapacityAndCleanupImages(imageStorage: imageStorage)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: referencedImage))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanImage.path))
+    }
+
     // MARK: - 清空
 
     func testDeleteAll() throws {
