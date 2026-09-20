@@ -23,6 +23,8 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
     public var createdAt: Date
     /// 是否敏感内容（标记，正常不落盘存密码）
     public var isSensitive: Bool
+    /// 图片内容哈希，用于相同图片去重；文本和普通文件为 nil
+    public var contentHash: String?
 
     public init(
         id: Int64? = nil,
@@ -30,7 +32,8 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         content: String,
         sourceApp: String? = nil,
         createdAt: Date = Date(),
-        isSensitive: Bool = false
+        isSensitive: Bool = false,
+        contentHash: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -38,5 +41,6 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         self.sourceApp = sourceApp
         self.createdAt = createdAt
         self.isSensitive = isSensitive
+        self.contentHash = contentHash
     }
 }
