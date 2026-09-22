@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private static let windowOriginDefaultsKey = "ClipStack.windowOrigin"
 
     private var statusItem: NSStatusItem!
+    private var settingsWindow: NSWindow?
     private var window: NSWindow?
     private var historyStore: HistoryStore!
     private var imageStorage: ImageStorage!
@@ -26,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pasteService: PasteService!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 仅作为菜单栏应用运行：不显示 Dock 图标和 App 切换器图标。
+        NSApp.setActivationPolicy(.accessory)
+
         let dbPath = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClipStack", isDirectory: true)
@@ -34,8 +38,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         imageStorage = ImageStorage(storageDirectory: ImageStorage.defaultDirectory())
         do {
             historyStore = try HistoryStore(path: dbPath, maxItems: 500)
-            try? historyStore.backfillImageHashes(with: imageStorage)
-            try? historyStore.enforceCapacityAndCleanupImages(imageStorage: imageStorage)
+            Task {
+                do { try await ClipboardPipeline.shared.bootstrap(store: historyStore, storage: imageStorage) }
+                catch { AppSettings.shared.message = "启动整理失败：\(error.localizedDescription)" }
+            }
         } catch {
             fatalError("初始化数据库失败: \(error)")
         }
@@ -51,9 +57,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = ClipStackIcon.menuBarImage()
-            button.action = #selector(toggleWindow)
+            button.action = #selector(statusClicked)
             button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "ClipStack · 左键打开，右键设置"
         }
+        AppSettings.shared.onPauseChange = { [weak self] paused in
+            if paused { self?.clipboardMonitor.stop() }
+            else { self?.clipboardMonitor.start() }
+            self?.statusItem.button?.appearsDisabled = paused
+        }
+        AppSettings.shared.onMaintenance = { [weak self] in self?.performMaintenance() }
+        AppSettings.shared.onStorageRefresh = { [weak self] in self?.refreshStorageSummary() }
+        AppSettings.shared.onClearCache = { [weak self] in self?.clearRegenerableCaches() }
 
         // 全局快捷键 ⌘⌃J
         KeyboardShortcuts.onKeyUp(for: .togglePanel) { [weak self] in
@@ -68,7 +84,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         clipboardMonitor.stop()
     }
 
+    private func performMaintenance() {
+        let store = historyStore!, storage = imageStorage!
+        AppSettings.shared.busy = true
+        Task {
+            do {
+                try await ClipboardPipeline.shared.maintain(store: store, storage: storage, retentionDays: AppSettings.shared.retentionDays)
+                AppSettings.shared.message = "普通历史已按规则整理。"
+                refreshStorageSummary()
+            } catch { AppSettings.shared.message = "整理失败：\(error.localizedDescription)" }
+            AppSettings.shared.busy = false
+        }
+    }
+
+    private func refreshStorageSummary() {
+        let storage = imageStorage!
+        Task {
+            let managed = (try? storage.managedStorageBytes()) ?? 0
+            let cache = (try? await ImageProcessing.shared.cacheBytes()) ?? 0
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = .file
+            AppSettings.shared.storageSummary = "托管图片：\(formatter.string(fromByteCount: Int64(managed)))；可再生缓存：\(formatter.string(fromByteCount: Int64(cache)))。本地原文件不计入且不会删除。"
+        }
+    }
+
+    private func clearRegenerableCaches() {
+        AppSettings.shared.busy = true
+        Task {
+            do { try await ImageProcessing.shared.clearCaches(); AppSettings.shared.message = "缩略图与 OCR 缓存已清理，需要时会重新生成。" }
+            catch { AppSettings.shared.message = "缓存清理失败：\(error.localizedDescription)" }
+            AppSettings.shared.busy = false
+            refreshStorageSummary()
+        }
+    }
+
     // MARK: - 窗口控制
+
+    @objc private func statusClicked() {
+        guard NSApp.currentEvent?.type == .rightMouseUp else { toggleWindow(); return }
+        let menu = NSMenu()
+        for (title, action) in [
+            ("打开面板", #selector(openPanel)),
+            (AppSettings.shared.paused ? "恢复记录" : "暂停记录", #selector(toggleRecording)),
+            ("设置…", #selector(openSettings)),
+            ("退出 ClipStack", #selector(quitApp))
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        guard let button = statusItem.button else { return }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
+    }
+
+    @objc private func openPanel() { showWindow() }
+    @objc private func toggleRecording() { AppSettings.shared.togglePause() }
+    @objc private func quitApp() { NSApp.terminate(nil) }
+    @objc private func openSettings() {
+        if settingsWindow == nil {
+            let controller = NSHostingController(rootView: ClipStackSettingsView())
+            let w = NSWindow(contentViewController: controller)
+            w.title = "ClipStack 设置"
+            w.styleMask = [.titled, .closable]
+            w.isReleasedWhenClosed = false
+            w.center()
+            settingsWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
 
     @objc private func toggleWindow() {
         if let window, window.isVisible {
@@ -96,7 +180,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             )
             w.titleVisibility = .hidden
             w.titlebarAppearsTransparent = true
-            w.level = .floating
+            w.level = (UserDefaults.standard.object(forKey: "ClipStack.pinned") as? Bool ?? true) ? .floating : .normal
             w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             w.isMovableByWindowBackground = true
             w.hidesOnDeactivate = false
@@ -127,6 +211,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.contentView = hostingView
             hostingView.autoresizingMask = [.width, .height]
             window = w
+            if let encoded = UserDefaults.standard.string(forKey: "ClipStack.windowSize") {
+                let size = NSSizeFromString(encoded)
+                if size.width.isFinite, size.height.isFinite, size.width >= 420, size.height >= 320 {
+                    let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 900)
+                    w.setContentSize(NSSize(width: min(size.width, screen.width), height: min(size.height, screen.height - 30)))
+                }
+            }
 
             if let savedOrigin = persistedWindowOrigin(for: w.frame.size) {
                 w.setFrameOrigin(savedOrigin)
@@ -140,6 +231,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard let w = notification.object as? NSWindow, w === window else { return }
+        UserDefaults.standard.set(NSStringFromSize(w.contentRect(forFrameRect: w.frame).size), forKey: "ClipStack.windowSize")
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard let w = notification.object as? NSWindow, w === window else { return }
+        persistWindowOrigin(w.frame.origin)
     }
 
     func windowWillClose(_ notification: Notification) {

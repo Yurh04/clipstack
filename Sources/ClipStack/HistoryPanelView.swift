@@ -8,7 +8,7 @@ import ClipStackCore
 public struct HistoryPanelView: View {
     @StateObject private var viewModel: HistoryPanelViewModel
     @FocusState private var searchFocused: Bool
-    @State private var isWindowPinned = true
+    @AppStorage("ClipStack.pinned") private var isWindowPinned = true
 
     private let onPinnedChange: (Bool) -> Void
 
@@ -98,7 +98,8 @@ public struct HistoryPanelView: View {
             ImagePreviewView(
                 item: wrapper.item,
                 imageStorage: viewModel.imageStorage,
-                onCopy: { viewModel.copy(item: $0) }
+                onCopy: { viewModel.copy(item: $0) },
+                onOCR: { viewModel.saveOCRText($0, for: wrapper.item) }
             )
         }
         // 注册为窗口级快捷键，避免搜索框焦点吞掉空格事件。
@@ -119,6 +120,13 @@ public struct HistoryPanelView: View {
             .disabled(!viewModel.canCopySelected || searchFocused)
             .opacity(0.001)
             .frame(width: 1, height: 1)
+        }
+        .task(id: viewModel.selectedCategory) {
+            guard viewModel.selectedCategory == .image else { return }
+            do {
+                try await Task.sleep(for: .seconds(1))
+                await ImageProcessing.shared.trimCaches()
+            } catch { }
         }
         .onAppear {
             viewModel.reload()
@@ -207,11 +215,11 @@ public struct HistoryPanelView: View {
                 }
             }
             .onChange(of: viewModel.selectedIndex) {
-                if let newIndex = viewModel.selectedIndex {
-                    withAnimation(.easeInOut(duration: 0.1)) {
-                        proxy.scrollTo(newIndex, anchor: .center)
-                    }
+                guard viewModel.isKeyboardNavigating, let newIndex = viewModel.selectedIndex else { return }
+                withAnimation(.easeInOut(duration: 0.1)) {
+                    proxy.scrollTo(newIndex, anchor: .center)
                 }
+                viewModel.isKeyboardNavigating = false
             }
         }
     }
@@ -228,12 +236,18 @@ public struct HistoryPanelView: View {
                     isSelected: viewModel.selectedIndex == index,
                     imageStorage: viewModel.imageStorage
                 )
+                .aspectRatio(1, contentMode: .fit)
                 .id(index)
                 .onTapGesture {
                     searchFocused = false
                     viewModel.selectedIndex = index
                     // 直接点击图片打开预览，避免依赖搜索框焦点和空格事件。
                     viewModel.previewSelected()
+                }
+                .contextMenu {
+                    Button(viewModel.filteredItems[index].isFavorite ? "取消收藏" : "收藏") {
+                        viewModel.toggleFavorite(item: viewModel.filteredItems[index])
+                    }
                 }
             }
         }
@@ -265,7 +279,8 @@ public struct HistoryPanelView: View {
                         searchFocused = false
                         viewModel.selectedIndex = index
                         viewModel.copy(item: viewModel.filteredItems[index])
-                    }
+                    },
+                    onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) }
                 )
                 .id(index)
             }
@@ -342,8 +357,11 @@ public struct HistoryPanelView: View {
 
 @MainActor
 final class HistoryPanelViewModel: ObservableObject {
-    @Published var selectedCategory: ClipboardCategory = .all {
-        didSet { applyFilter() }
+    @Published var selectedCategory: ClipboardCategory = ClipboardCategory(rawValue: UserDefaults.standard.string(forKey: "ClipStack.category") ?? "all") ?? .all {
+        didSet {
+            UserDefaults.standard.set(selectedCategory.rawValue, forKey: "ClipStack.category")
+            applyFilter()
+        }
     }
     @Published var searchText: String = "" {
         didSet { applyFilter() }
@@ -352,6 +370,7 @@ final class HistoryPanelViewModel: ObservableObject {
     @Published var filteredItems: [ClipboardItem] = []
     @Published var previewItem: PreviewWrapper? = nil  // 空格键触发的大图预览
     @Published var isDropTargeted = false
+    var isKeyboardNavigating = false
 
     let historyStore: HistoryStore
     let imageStorage: ImageStorage
@@ -438,6 +457,7 @@ final class HistoryPanelViewModel: ObservableObject {
     }
 
     func moveSelectionUp() {
+        isKeyboardNavigating = true
         guard !filteredItems.isEmpty else { return }
         if let current = selectedIndex, current > 0 {
             selectedIndex = current - 1
@@ -447,6 +467,7 @@ final class HistoryPanelViewModel: ObservableObject {
     }
 
     func moveSelectionDown() {
+        isKeyboardNavigating = true
         guard !filteredItems.isEmpty else { return }
         if let current = selectedIndex, current < filteredItems.count - 1 {
             selectedIndex = current + 1
@@ -467,6 +488,18 @@ final class HistoryPanelViewModel: ObservableObject {
 
     func copy(item: ClipboardItem) {
         onCopy(item)
+    }
+
+    func saveOCRText(_ text: String, for item: ClipboardItem) {
+        guard let id = item.id, item.ocrText != text else { return }
+        do { try historyStore.updateOCRText(id: id, text: text); reload() }
+        catch { AppSettings.shared.message = "图片文字索引保存失败：\(error.localizedDescription)" }
+    }
+
+    func toggleFavorite(item: ClipboardItem) {
+        guard let id = item.id else { return }
+        do { try historyStore.updateFavorite(id: id, isFavorite: !item.isFavorite); reload() }
+        catch { AppSettings.shared.message = "收藏更新失败：\(error.localizedDescription)" }
     }
 
     func previewSelected() {
@@ -509,7 +542,10 @@ final class HistoryPanelViewModel: ObservableObject {
         // 搜索过滤（大小写不敏感子串）
         let keyword = searchText.trimmingCharacters(in: .whitespaces)
         if !keyword.isEmpty {
-            items = items.filter { $0.content.range(of: keyword, options: .caseInsensitive) != nil }
+            items = items.filter {
+                $0.content.range(of: keyword, options: .caseInsensitive) != nil ||
+                $0.ocrText?.range(of: keyword, options: .caseInsensitive) != nil
+            }
         }
 
         filteredItems = items
@@ -520,7 +556,7 @@ final class HistoryPanelViewModel: ObservableObject {
 
 // MARK: - 剪贴板分类
 
-enum ClipboardCategory: CaseIterable {
+enum ClipboardCategory: String, CaseIterable {
     case all
     case text
     case image

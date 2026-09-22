@@ -10,46 +10,40 @@ struct ImageGridCell: View {
     @State private var thumbnail: NSImage? = nil
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            // 背景色块（加载中占位）
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.1))
-                .aspectRatio(1, contentMode: .fit)
-
-            // 图片
-            if let img = thumbnail {
-                Image(nsImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.secondary.opacity(0.15))
-                    .overlay(
-                        Image(systemName: "photo")
-                            .font(.system(size: 28))
-                            .foregroundColor(.secondary.opacity(0.5))
-                    )
+        // 用透明方块决定单元格尺寸，图片只作为 overlay，绝不反向影响布局，
+        // 避免超长图（如 1512×23134）撑开网格导致主线程布局死循环。
+        Color.secondary.opacity(0.1)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                if let img = thumbnail {
+                    Image(nsImage: img)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 28))
+                        .foregroundColor(.secondary.opacity(0.5))
+                }
             }
-
-            // 右下角时间标注
-            Text(timeAgo)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundColor(.white)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 3)
-                .background(Color.black.opacity(0.55))
-                .cornerRadius(4)
-                .padding(5)
-        }
-        .overlay(
-            // 选中边框
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
-        )
-        .task(id: item.id) {
-            thumbnail = await loadThumbnail()
-        }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .bottomTrailing) {
+                Text(timeAgo)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 3)
+                    .background(Color.black.opacity(0.55))
+                    .cornerRadius(4)
+                    .padding(5)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
+            )
+            .contentShape(Rectangle())
+            .task(id: item.id) {
+                thumbnail = await loadThumbnail()
+            }
     }
 
     private var timeAgo: String {
@@ -61,27 +55,7 @@ struct ImageGridCell: View {
     }
 
     private func loadThumbnail() async -> NSImage? {
-        let storage = imageStorage
-        let path = item.content
-        return await Task.detached(priority: .utility) {
-            guard let data = try? storage.load(path: path),
-                  let image = NSImage(data: data) else { return nil }
-            // 生成 160x160 缩略图（网格用大图）
-            let size: CGFloat = 160
-            let thumb = NSImage(size: NSSize(width: size, height: size))
-            thumb.lockFocus()
-            let srcSize = image.size
-            let scale = max(size / srcSize.width, size / srcSize.height)
-            let drawSize = NSSize(width: srcSize.width * scale, height: srcSize.height * scale)
-            let drawRect = NSRect(
-                x: (size - drawSize.width) / 2,
-                y: (size - drawSize.height) / 2,
-                width: drawSize.width,
-                height: drawSize.height
-            )
-            image.draw(in: drawRect)
-            thumb.unlockFocus()
-            return thumb
-        }.value
+        guard let data = await ImageProcessing.shared.thumbnail(path: item.content, pixels: 320) else { return nil }
+        return NSImage(data: data)
     }
 }

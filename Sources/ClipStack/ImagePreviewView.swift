@@ -19,7 +19,7 @@ struct ImagePreviewSheet: View {
     let onCopy: (ClipboardItem) -> Void
 
     var body: some View {
-        ImagePreviewView(item: item, imageStorage: imageStorage, onCopy: onCopy)
+        ImagePreviewView(item: item, imageStorage: imageStorage, onCopy: onCopy, onOCR: { _ in })
     }
 }
 
@@ -28,6 +28,7 @@ struct ImagePreviewView: View {
     let item: ClipboardItem
     let imageStorage: ImageStorage
     let onCopy: (ClipboardItem) -> Void
+    let onOCR: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage? = nil
@@ -83,10 +84,12 @@ struct ImagePreviewView: View {
                 if let image {
                     OCRImageCanvasView(
                         image: image,
+                        imagePath: item.content,
                         zoom: $zoom,
                         pan: $pan,
                         zoomRange: minimumZoom...maximumZoom,
                         onCopyImage: { copyImage() },
+                        onOCRRecognized: onOCR,
                         onTextCopied: { _ in showCopiedToast("文字已复制") }
                     )
 
@@ -169,12 +172,10 @@ struct ImagePreviewView: View {
     private func loadFullImage() async -> NSImage? {
         let storage = imageStorage
         let path = item.content
-        return await Task.detached(priority: .userInitiated) {
-            guard let data = try? storage.load(path: path),
-                  let nsImage = NSImage(data: data) else {
-                return nil
-            }
-            return nsImage
+        let data = await Task.detached(priority: .userInitiated) {
+            try? storage.load(path: path)
         }.value
+        guard let data else { return nil }
+        return NSImage(data: data)
     }
 }

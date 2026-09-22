@@ -64,6 +64,14 @@ public final class HistoryStore: Sendable {
             )
         }
 
+        migrator.registerMigration("v3") { db in
+            try db.alter(table: ClipboardItem.databaseTableName) { t in
+                t.add(column: "ocrText", .text)
+                t.add(column: "isFavorite", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(index: "idx_favoriteCreatedAt", on: ClipboardItem.databaseTableName, columns: ["isFavorite", "createdAt"])
+        }
+
         try migrator.migrate(dbQueue)
     }
 
@@ -86,6 +94,9 @@ public final class HistoryStore: Sendable {
                     .fetchOne(db) {
                     var updated = existing
                     updated.createdAt = item.createdAt
+                    // Duplicate captures must not erase user-owned metadata.
+                    updated.isFavorite = existing.isFavorite
+                    updated.ocrText = existing.ocrText
                     let existingFileExists = FileManager.default.fileExists(atPath: existing.content)
                     let newFileExists = FileManager.default.fileExists(atPath: item.content)
                     if !existingFileExists && newFileExists {
@@ -129,8 +140,8 @@ public final class HistoryStore: Sendable {
 
             for var item in items {
                 let url = URL(fileURLWithPath: item.content)
-                guard let data = try? Data(contentsOf: url) else { continue }
-                item.contentHash = ImageStorage.sha256Hex(data)
+                guard let hash = try? ImageStorage.sha256File(at: url) else { continue }
+                item.contentHash = hash
                 try item.update(db)
             }
         }
@@ -155,12 +166,43 @@ public final class HistoryStore: Sendable {
             }
 
             if let search = filter.searchText, !search.isEmpty {
-                query = query.filter(ClipboardItem.Columns.content.like("%\(search)%"))
+                query = query.filter(
+                    ClipboardItem.Columns.content.like("%\(search)%") ||
+                    ClipboardItem.Columns.ocrText.like("%\(search)%")
+                )
             }
 
             return try query
                 .order(ClipboardItem.Columns.createdAt.desc)
                 .fetchAll(db)
+        }
+    }
+
+    public func updateFavorite(id: Int64, isFavorite: Bool) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
+            item.isFavorite = isFavorite
+            try item.update(db)
+        }
+    }
+
+    public func updateOCRText(id: Int64, text: String) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
+            item.ocrText = text
+            try item.update(db)
+        }
+    }
+
+    @discardableResult
+    public func deleteExpired(olderThan date: Date) throws -> [ClipboardItem] {
+        try dbQueue.write { db in
+            let items = try ClipboardItem
+                .filter(ClipboardItem.Columns.isFavorite == false)
+                .filter(ClipboardItem.Columns.createdAt < date)
+                .fetchAll(db)
+            for item in items { _ = try item.delete(db) }
+            return items
         }
     }
 
@@ -177,12 +219,13 @@ public final class HistoryStore: Sendable {
     @discardableResult
     public func enforceCapacity() throws -> [ClipboardItem] {
         try dbQueue.write { db in
-            let count = try ClipboardItem.fetchCount(db)
-            guard count > maxItems else { return [] }
+            let normalCount = try ClipboardItem.filter(ClipboardItem.Columns.isFavorite == false).fetchCount(db)
+            guard normalCount > maxItems else { return [] }
 
-            let toDelete = count - maxItems
-            // 查出最旧的 N 条
+            let toDelete = normalCount - maxItems
+            // 查出最旧的 N 条普通历史；收藏永不因容量淘汰
             let oldest = try ClipboardItem
+                .filter(ClipboardItem.Columns.isFavorite == false)
                 .order(ClipboardItem.Columns.createdAt.asc)
                 .limit(toDelete)
                 .fetchAll(db)
