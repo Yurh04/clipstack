@@ -40,6 +40,14 @@ public final class ImageStorage: Sendable {
         try Data(contentsOf: URL(fileURLWithPath: path))
     }
 
+    public func managedStorageBytes() throws -> Int {
+        guard FileManager.default.fileExists(atPath: storageDirectory.path) else { return 0 }
+        return try FileManager.default.contentsOfDirectory(at: storageDirectory, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]).reduce(0) { sum, url in
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            return sum + (values.isRegularFile == true ? values.fileSize ?? 0 : 0)
+        }
+    }
+
     /// 删除指定路径的图片文件（文件不存在时静默返回，不报错）
     public func delete(path: String) throws {
         let fileURL = URL(fileURLWithPath: path)
@@ -71,6 +79,16 @@ public final class ImageStorage: Sendable {
             deletedFiles.append(fileURL)
         }
         return deletedFiles
+    }
+
+    public static func sha256File(at url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     public static func sha256Hex(_ data: Data) -> String {

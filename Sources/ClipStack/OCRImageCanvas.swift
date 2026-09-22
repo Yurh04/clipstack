@@ -5,21 +5,25 @@ import Vision
 /// 图片预览画布：支持 Vision OCR 文字框选、滚轮缩放、触控板平移和鼠标中键拖拽平移。
 struct OCRImageCanvasView: NSViewRepresentable {
     let image: NSImage
+    let imagePath: String
     @Binding var zoom: CGFloat
     @Binding var pan: CGSize
     let zoomRange: ClosedRange<CGFloat>
     let onCopyImage: () -> Void
+    let onOCRRecognized: (String) -> Void
     let onTextCopied: (String) -> Void
 
     func makeNSView(context: Context) -> OCRImageCanvas {
         OCRImageCanvas(
             image: image,
+            imagePath: imagePath,
             zoom: zoom,
             pan: pan,
             zoomRange: zoomRange,
             onZoomChange: { zoom = $0 },
             onPanChange: { pan = $0 },
             onCopyImage: onCopyImage,
+            onOCRRecognized: onOCRRecognized,
             onTextCopied: onTextCopied
         )
     }
@@ -29,6 +33,7 @@ struct OCRImageCanvasView: NSViewRepresentable {
         nsView.onZoomChange = { zoom = $0 }
         nsView.onPanChange = { pan = $0 }
         nsView.onCopyImage = onCopyImage
+        nsView.onOCRRecognized = onOCRRecognized
         nsView.onTextCopied = onTextCopied
         nsView.updateExternalState(zoom: zoom, pan: pan)
     }
@@ -49,6 +54,7 @@ final class OCRImageCanvas: NSView {
     }
 
     private let image: NSImage
+    private let imagePath: String
     private let cgImage: CGImage?
     private var lines: [OCRLine] = []
     private var tokens: [OCRToken] = []
@@ -65,26 +71,31 @@ final class OCRImageCanvas: NSView {
     var onZoomChange: ((CGFloat) -> Void)?
     var onPanChange: ((CGSize) -> Void)?
     var onCopyImage: (() -> Void)?
+    var onOCRRecognized: ((String) -> Void)?
     var onTextCopied: ((String) -> Void)?
 
     init(
         image: NSImage,
+        imagePath: String,
         zoom: CGFloat,
         pan: CGSize,
         zoomRange: ClosedRange<CGFloat>,
         onZoomChange: @escaping (CGFloat) -> Void,
         onPanChange: @escaping (CGSize) -> Void,
         onCopyImage: @escaping () -> Void,
+        onOCRRecognized: @escaping (String) -> Void,
         onTextCopied: @escaping (String) -> Void
     ) {
         self.image = image
-        self.cgImage = Self.makeCGImage(from: image)
+        self.imagePath = imagePath
+        self.cgImage = nil
         self.zoom = zoom
         self.pan = pan
         self.zoomRange = zoomRange
         self.onZoomChange = onZoomChange
         self.onPanChange = onPanChange
         self.onCopyImage = onCopyImage
+        self.onOCRRecognized = onOCRRecognized
         self.onTextCopied = onTextCopied
         super.init(frame: .zero)
         wantsLayer = true
@@ -531,24 +542,18 @@ final class OCRImageCanvas: NSView {
     }
 
     private func runOCR() {
-        guard let cgImage else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            let request = VNRecognizeTextRequest { [weak self] request, _ in
-                let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-                let parsedLines = Self.parseObservations(observations)
-                DispatchQueue.main.async {
-                    self?.updateOCRLines(parsedLines)
-                }
-            }
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
-            request.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
-
-            let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let path = imagePath
+        Task { [weak self] in
             do {
-                try handler.perform([request])
+                let result = try await ImageProcessing.shared.recognize(path: path)
+                let converted = result.lines.map { line in
+                    OCRLine(text: line.text, tokens: line.tokens.map { token in
+                        OCRToken(id: token.id, text: token.text, normalizedBox: token.normalizedBox, range: token.range(in: line.text))
+                    })
+                }
+                self?.updateOCRLines(converted)
             } catch {
-                print("⚠️ OCR 识别失败: \(error)")
+                AppSettings.shared.message = "图片文字识别失败：\(error.localizedDescription)"
             }
         }
     }
@@ -556,6 +561,8 @@ final class OCRImageCanvas: NSView {
     private func updateOCRLines(_ newLines: [OCRLine]) {
         lines = newLines
         tokens = newLines.flatMap(\.tokens)
+        let searchableText = newLines.map(\.text).joined(separator: "\n")
+        if !searchableText.isEmpty { onOCRRecognized?(searchableText) }
         selectedTokenIDs.removeAll()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true

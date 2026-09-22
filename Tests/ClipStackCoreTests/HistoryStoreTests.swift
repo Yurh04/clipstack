@@ -205,6 +205,31 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: orphanImage.path))
     }
 
+    func testFavoriteItemsSurviveCapacityAndExpiration() throws {
+        let store = try HistoryStore.inMemory(maxItems: 1)
+        let old = try store.save(ClipboardItem(type: .text, content: "favorite", createdAt: Date(timeIntervalSince1970: 1000)))
+        try store.updateFavorite(id: try XCTUnwrap(old.id), isFavorite: true)
+        try store.save(ClipboardItem(type: .text, content: "normal-1", createdAt: Date(timeIntervalSince1970: 2000)))
+        try store.save(ClipboardItem(type: .text, content: "normal-2", createdAt: Date(timeIntervalSince1970: 3000)))
+
+        _ = try store.deleteExpired(olderThan: Date(timeIntervalSince1970: 2500))
+        _ = try store.enforceCapacity()
+
+        let all = try store.all()
+        XCTAssertTrue(all.contains { $0.content == "favorite" && $0.isFavorite })
+        XCTAssertFalse(all.contains { $0.content == "normal-1" })
+    }
+
+    func testSearchMatchesOCRTextAndUpdatePersists() throws {
+        let store = try HistoryStore.inMemory()
+        let item = try store.save(ClipboardItem(type: .image, content: "/tmp/image.png", contentHash: "hash"))
+        try store.updateOCRText(id: try XCTUnwrap(item.id), text: "invoice A-1024")
+
+        let hits = try store.items(matching: HistoryFilter(searchText: "a-1024"))
+        XCTAssertEqual(hits.count, 1)
+        XCTAssertEqual(hits.first?.ocrText, "invoice A-1024")
+    }
+
     // MARK: - 清空
 
     func testDeleteAll() throws {

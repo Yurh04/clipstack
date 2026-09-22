@@ -26,6 +26,11 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
     /// 图片内容哈希，用于相同图片去重；文本和普通文件为 nil
     public var contentHash: String?
 
+    /// 图片 OCR 文本，用于搜索；其他类型为 nil
+    public var ocrText: String?
+    /// 收藏条目不参与普通容量和按天淘汰
+    public var isFavorite: Bool
+
     public init(
         id: Int64? = nil,
         type: ClipboardItemType,
@@ -33,7 +38,9 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         sourceApp: String? = nil,
         createdAt: Date = Date(),
         isSensitive: Bool = false,
-        contentHash: String? = nil
+        contentHash: String? = nil,
+        ocrText: String? = nil,
+        isFavorite: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -42,5 +49,7 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         self.createdAt = createdAt
         self.isSensitive = isSensitive
         self.contentHash = contentHash
+        self.ocrText = ocrText
+        self.isFavorite = isFavorite
     }
 }

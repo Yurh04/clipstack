@@ -8,6 +8,7 @@ struct HistoryItemRow: View {
     let imageStorage: ImageStorage
     let onTap: () -> Void
     let onCopy: (() -> Void)?
+    let onFavorite: () -> Void
 
     @State private var thumbnail: NSImage? = nil
 
@@ -36,6 +37,13 @@ struct HistoryItemRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
+
+            Button(action: onFavorite) {
+                Image(systemName: item.isFavorite ? "star.fill" : "star")
+                    .foregroundStyle(item.isFavorite ? .yellow : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(item.isFavorite ? "取消收藏" : "收藏并保留")
 
             if (item.type == .file || item.type == .text), let onCopy {
                 Button(action: onCopy) {
@@ -146,25 +154,7 @@ struct HistoryItemRow: View {
     // MARK: - 异步加载
 
     private func loadThumbnail() async -> NSImage? {
-        let storage = imageStorage
-        let path = item.content
-        return await Task.detached(priority: .utility) {
-            guard let data = try? storage.load(path: path),
-                  let image = NSImage(data: data) else { return nil }
-            let thumb = NSImage(size: NSSize(width: 44, height: 44))
-            thumb.lockFocus()
-            let srcSize = image.size
-            let scale = max(44 / srcSize.width, 44 / srcSize.height)
-            let drawSize = NSSize(width: srcSize.width * scale, height: srcSize.height * scale)
-            let drawRect = NSRect(
-                x: (44 - drawSize.width) / 2,
-                y: (44 - drawSize.height) / 2,
-                width: drawSize.width,
-                height: drawSize.height
-            )
-            image.draw(in: drawRect)
-            thumb.unlockFocus()
-            return thumb
-        }.value
+        guard let data = await ImageProcessing.shared.thumbnail(path: item.content, pixels: 88) else { return nil }
+        return NSImage(data: data)
     }
 }
