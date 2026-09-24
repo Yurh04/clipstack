@@ -18,6 +18,7 @@ extension ClipboardItem: FetchableRecord, MutablePersistableRecord {
         static let contentHash = Column("contentHash")
         static let ocrText = Column("ocrText")
         static let isFavorite = Column("isFavorite")
+        static let note = Column("note")
     }
 
     /// 插入后回填自增主键

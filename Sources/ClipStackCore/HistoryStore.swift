@@ -72,6 +72,12 @@ public final class HistoryStore: Sendable {
             try db.create(index: "idx_favoriteCreatedAt", on: ClipboardItem.databaseTableName, columns: ["isFavorite", "createdAt"])
         }
 
+        migrator.registerMigration("v4") { db in
+            try db.alter(table: ClipboardItem.databaseTableName) { t in
+                t.add(column: "note", .text)
+            }
+        }
+
         try migrator.migrate(dbQueue)
     }
 
@@ -168,7 +174,8 @@ public final class HistoryStore: Sendable {
             if let search = filter.searchText, !search.isEmpty {
                 query = query.filter(
                     ClipboardItem.Columns.content.like("%\(search)%") ||
-                    ClipboardItem.Columns.ocrText.like("%\(search)%")
+                    ClipboardItem.Columns.ocrText.like("%\(search)%") ||
+                    ClipboardItem.Columns.note.like("%\(search)%")
                 )
             }
 
@@ -194,6 +201,15 @@ public final class HistoryStore: Sendable {
         }
     }
 
+    public func updateNote(id: Int64, note: String?) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
+            let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+            item.note = trimmed?.isEmpty == true ? nil : trimmed
+            try item.update(db)
+        }
+    }
+
     @discardableResult
     public func deleteExpired(olderThan date: Date) throws -> [ClipboardItem] {
         try dbQueue.write { db in
@@ -206,10 +222,10 @@ public final class HistoryStore: Sendable {
         }
     }
 
-    /// 清空全部历史
-    public func deleteAll() throws {
+    /// 默认清空普通历史；显式传入 includingFavorites 才会删除收藏。
+    public func deleteAll(includingFavorites: Bool = false) throws {
         _ = try dbQueue.write { db in
-            try ClipboardItem.deleteAll(db)
+            try ClipboardItem.filter(includingFavorites || ClipboardItem.Columns.isFavorite == false).deleteAll(db)
         }
     }
 

@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         AppSettings.shared.onMaintenance = { [weak self] in self?.performMaintenance() }
         AppSettings.shared.onStorageRefresh = { [weak self] in self?.refreshStorageSummary() }
+        AppSettings.shared.onClearHistory = { [weak self] includingFavorites in self?.clearHistory(includingFavorites: includingFavorites) }
         AppSettings.shared.onClearCache = { [weak self] in self?.clearRegenerableCaches() }
 
         // 全局快捷键 ⌘⌃J
@@ -106,6 +107,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             formatter.countStyle = .file
             AppSettings.shared.storageSummary = "托管图片：\(formatter.string(fromByteCount: Int64(managed)))；可再生缓存：\(formatter.string(fromByteCount: Int64(cache)))。本地原文件不计入且不会删除。"
         }
+    }
+
+    private func clearHistory(includingFavorites: Bool) {
+        do {
+            try historyStore.deleteAll(includingFavorites: includingFavorites)
+            let remaining = try historyStore.all()
+            try imageStorage.deleteUnreferencedFiles(validPaths: Set(remaining.filter { $0.type == .image }.map(\.content)))
+            AppSettings.shared.message = includingFavorites ? "全部历史已清空。" : "普通历史已清空，收藏已保留。"
+            refreshStorageSummary()
+        } catch { AppSettings.shared.message = "清空失败：\(error.localizedDescription)" }
     }
 
     private func clearRegenerableCaches() {

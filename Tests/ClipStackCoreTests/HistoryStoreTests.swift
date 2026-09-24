@@ -230,6 +230,41 @@ final class HistoryStoreTests: XCTestCase {
         XCTAssertEqual(hits.first?.ocrText, "invoice A-1024")
     }
 
+    func testNotesPersistAndAreSearchableAfterReopening() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("history.sqlite").path
+        let store = try HistoryStore(path: path)
+        let item = try store.save(ClipboardItem(type: .text, content: "https://example.com", isFavorite: true))
+        try store.updateNote(id: XCTUnwrap(item.id), note: "  测试环境 Alpha  ")
+        let reopened = try HistoryStore(path: path)
+        let hits = try reopened.items(matching: HistoryFilter(searchText: "alpha"))
+        XCTAssertEqual(hits.first?.note, "测试环境 Alpha")
+        XCTAssertEqual(hits.first?.content, item.content)
+        try reopened.updateNote(id: XCTUnwrap(item.id), note: " \n ")
+        XCTAssertNil(try reopened.all().first?.note)
+    }
+
+    func testClearPreservesFavoritesUnlessExplicitlyIncluded() throws {
+        let store = try HistoryStore.inMemory()
+        try store.save(ClipboardItem(type: .text, content: "keep", isFavorite: true, note: "重要"))
+        try store.save(ClipboardItem(type: .text, content: "remove"))
+        try store.deleteAll()
+        XCTAssertEqual(try store.all().map(\.content), ["keep"])
+        XCTAssertEqual(try store.all().first?.note, "重要")
+        try store.deleteAll(includingFavorites: true)
+        XCTAssertTrue(try store.all().isEmpty)
+    }
+
+    func testDuplicateCapturePreservesNote() throws {
+        let store = try HistoryStore.inMemory()
+        let item = try store.save(ClipboardItem(type: .image, content: "/tmp/example.png", contentHash: "same", isFavorite: true, note: "示意图"))
+        let updated = try store.save(ClipboardItem(type: .image, content: "/tmp/example.png", contentHash: "same"))
+        XCTAssertEqual(updated.id, item.id)
+        XCTAssertEqual(updated.note, "示意图")
+        XCTAssertTrue(updated.isFavorite)
+    }
+
     // MARK: - 清空
 
     func testDeleteAll() throws {

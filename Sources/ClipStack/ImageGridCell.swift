@@ -1,11 +1,13 @@
 import SwiftUI
 import ClipStackCore
 
-/// 图片分类的网格单元格：大缩略图 + 时间标注
+/// 图片分类的网格单元格：大缩略图、收藏标志和时间标注
 struct ImageGridCell: View {
     let item: ClipboardItem
     let isSelected: Bool
     let imageStorage: ImageStorage
+    let onFavorite: () -> Void
+    let onPreview: () -> Void
 
     @State private var thumbnail: NSImage? = nil
 
@@ -26,6 +28,21 @@ struct ImageGridCell: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onPreview)
+            .overlay(alignment: .topLeading) {
+                Button(action: onFavorite) {
+                    Image(systemName: item.isFavorite ? "star.fill" : "star")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(item.isFavorite ? .yellow : .white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(7)
+                .help(item.isFavorite ? "取消收藏" : "收藏")
+                .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
+            }
             .overlay(alignment: .bottomTrailing) {
                 Text(timeAgo)
                     .font(.system(size: 9, weight: .medium))

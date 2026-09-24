@@ -30,6 +30,8 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
     public var ocrText: String?
     /// 收藏条目不参与普通容量和按天淘汰
     public var isFavorite: Bool
+    /// 用户为收藏记录添加的可搜索备注
+    public var note: String?
 
     public init(
         id: Int64? = nil,
@@ -40,7 +42,8 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         isSensitive: Bool = false,
         contentHash: String? = nil,
         ocrText: String? = nil,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        note: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -51,5 +54,6 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         self.contentHash = contentHash
         self.ocrText = ocrText
         self.isFavorite = isFavorite
+        self.note = note
     }
 }

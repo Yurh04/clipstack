@@ -44,6 +44,9 @@ public struct HistoryPanelView: View {
         VStack(spacing: 0) {
             searchField
             categoryPicker
+            if viewModel.selectedCategory == .favorites {
+                favoriteTypePicker
+            }
             Divider()
             if viewModel.filteredItems.isEmpty {
                 emptyView
@@ -83,16 +86,24 @@ public struct HistoryPanelView: View {
             viewModel.previewSelected()
             return .handled
         }
-        .onKeyPress(keys: ["1", "2", "3", "4"]) { press in
+        .onKeyPress(keys: ["1", "2", "3", "4", "5"]) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
             switch press.key.character {
             case "1": viewModel.selectedCategory = .all
             case "2": viewModel.selectedCategory = .text
             case "3": viewModel.selectedCategory = .image
             case "4": viewModel.selectedCategory = .file
+            case "5": viewModel.selectedCategory = .favorites
             default: break
             }
             return .handled
+        }
+        .alert("编辑备注", isPresented: $viewModel.isEditingNote) {
+            TextField("例如：测试环境地址", text: $viewModel.noteDraft)
+            Button("保存") { viewModel.saveNote() }
+            Button("取消", role: .cancel) { viewModel.cancelEditingNote() }
+        } message: {
+            Text("备注会参与搜索。留空可删除备注。")
         }
         .sheet(item: $viewModel.previewItem) { wrapper in
             ImagePreviewView(
@@ -121,8 +132,8 @@ public struct HistoryPanelView: View {
             .opacity(0.001)
             .frame(width: 1, height: 1)
         }
-        .task(id: viewModel.selectedCategory) {
-            guard viewModel.selectedCategory == .image else { return }
+        .task(id: viewModel.showsImageGrid) {
+            guard viewModel.showsImageGrid else { return }
             do {
                 try await Task.sleep(for: .seconds(1))
                 await ImageProcessing.shared.trimCaches()
@@ -173,7 +184,7 @@ public struct HistoryPanelView: View {
     }
 
     private var categoryPicker: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: 10) {
             ForEach(ClipboardCategory.allCases, id: \.self) { category in
                 Button(action: {
                     viewModel.selectedCategory = category
@@ -204,11 +215,31 @@ public struct HistoryPanelView: View {
         .padding(.bottom, 10)
     }
 
+    private var favoriteTypePicker: some View {
+        HStack(spacing: 8) {
+            Text("收藏类型")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Button("全部") { viewModel.favoriteType = nil }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(viewModel.favoriteType == nil ? .accentColor : .secondary)
+            ForEach(ClipboardItemType.allCases, id: \.self) { type in
+                Button(typeLabel(type)) { viewModel.favoriteType = type }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(viewModel.favoriteType == type ? .accentColor : .secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+    }
+
     private var historyList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // 图片分类：大缩略图网格；其他分类：列表
-                if viewModel.selectedCategory == .image {
+                if viewModel.showsImageGrid {
                     imageGrid
                 } else {
                     itemList
@@ -234,17 +265,18 @@ public struct HistoryPanelView: View {
                 ImageGridCell(
                     item: viewModel.filteredItems[index],
                     isSelected: viewModel.selectedIndex == index,
-                    imageStorage: viewModel.imageStorage
+                    imageStorage: viewModel.imageStorage,
+                    onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) },
+                    onPreview: {
+                        searchFocused = false
+                        viewModel.selectedIndex = index
+                        viewModel.previewSelected()
+                    }
                 )
                 .aspectRatio(1, contentMode: .fit)
                 .id(index)
-                .onTapGesture {
-                    searchFocused = false
-                    viewModel.selectedIndex = index
-                    // 直接点击图片打开预览，避免依赖搜索框焦点和空格事件。
-                    viewModel.previewSelected()
-                }
                 .contextMenu {
+                    Button("编辑备注…") { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
                     Button(viewModel.filteredItems[index].isFavorite ? "取消收藏" : "收藏") {
                         viewModel.toggleFavorite(item: viewModel.filteredItems[index])
                     }
@@ -280,7 +312,8 @@ public struct HistoryPanelView: View {
                         viewModel.selectedIndex = index
                         viewModel.copy(item: viewModel.filteredItems[index])
                     },
-                    onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) }
+                    onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) },
+                    onEditNote: { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
                 )
                 .id(index)
             }
@@ -328,6 +361,15 @@ public struct HistoryPanelView: View {
         case .text: return "文本"
         case .image: return "图片"
         case .file: return "文件"
+        case .favorites: return "收藏"
+        }
+    }
+
+    private func typeLabel(_ type: ClipboardItemType) -> String {
+        switch type {
+        case .text: return "文本"
+        case .image: return "图片"
+        case .file: return "文件"
         }
     }
 
@@ -337,6 +379,7 @@ public struct HistoryPanelView: View {
         case .text: return "2"
         case .image: return "3"
         case .file: return "4"
+        case .favorites: return "5"
         }
     }
 
@@ -349,6 +392,9 @@ public struct HistoryPanelView: View {
         case .text: return "暂无文本记录"
         case .image: return "暂无图片记录"
         case .file: return "暂无文件记录"
+        case .favorites:
+            if let type = viewModel.favoriteType { return "暂无收藏的\(typeLabel(type))" }
+            return "暂无收藏，点击记录旁的星星即可收藏"
         }
     }
 }
@@ -363,12 +409,22 @@ final class HistoryPanelViewModel: ObservableObject {
             applyFilter()
         }
     }
+    var showsImageGrid: Bool {
+        selectedCategory == .image || (selectedCategory == .favorites && favoriteType == .image)
+    }
+
+    @Published var favoriteType: ClipboardItemType? {
+        didSet { applyFilter() }
+    }
     @Published var searchText: String = "" {
         didSet { applyFilter() }
     }
     @Published var selectedIndex: Int? = 0
     @Published var filteredItems: [ClipboardItem] = []
     @Published var previewItem: PreviewWrapper? = nil  // 空格键触发的大图预览
+    @Published var isEditingNote = false
+    @Published var noteDraft = ""
+    private var editingNoteID: Int64?
     @Published var isDropTargeted = false
     var isKeyboardNavigating = false
 
@@ -498,8 +554,33 @@ final class HistoryPanelViewModel: ObservableObject {
 
     func toggleFavorite(item: ClipboardItem) {
         guard let id = item.id else { return }
-        do { try historyStore.updateFavorite(id: id, isFavorite: !item.isFavorite); reload() }
+        do {
+            try historyStore.updateFavorite(id: id, isFavorite: !item.isFavorite)
+            reload()
+            selectedIndex = filteredItems.firstIndex(where: { $0.id == id }) ?? selectedIndex
+        }
         catch { AppSettings.shared.message = "收藏更新失败：\(error.localizedDescription)" }
+    }
+
+    func beginEditingNote(item: ClipboardItem) {
+        editingNoteID = item.id
+        noteDraft = item.note ?? ""
+        isEditingNote = true
+    }
+
+    func cancelEditingNote() {
+        editingNoteID = nil
+        noteDraft = ""
+    }
+
+    func saveNote() {
+        guard let id = editingNoteID else { return }
+        do {
+            try historyStore.updateNote(id: id, note: noteDraft)
+            cancelEditingNote()
+            reload()
+            selectedIndex = filteredItems.firstIndex(where: { $0.id == id }) ?? selectedIndex
+        } catch { AppSettings.shared.message = "备注保存失败：\(error.localizedDescription)" }
     }
 
     func previewSelected() {
@@ -527,7 +608,7 @@ final class HistoryPanelViewModel: ObservableObject {
         }
     }
 
-    /// 组合分类 + 搜索过滤（≤500 条，内存过滤足够快）
+    /// 组合分类和搜索过滤，并将收藏置顶；各组保持复制时间倒序。
     private func applyFilter() {
         var items = allItems
 
@@ -537,6 +618,11 @@ final class HistoryPanelViewModel: ObservableObject {
         case .text: items = items.filter { $0.type == .text }
         case .image: items = items.filter { $0.type == .image }
         case .file: items = items.filter { $0.type == .file }
+        case .favorites: items = items.filter { $0.isFavorite }
+        }
+
+        if selectedCategory == .favorites, let favoriteType {
+            items = items.filter { $0.type == favoriteType }
         }
 
         // 搜索过滤（大小写不敏感子串）
@@ -544,10 +630,12 @@ final class HistoryPanelViewModel: ObservableObject {
         if !keyword.isEmpty {
             items = items.filter {
                 $0.content.range(of: keyword, options: .caseInsensitive) != nil ||
-                $0.ocrText?.range(of: keyword, options: .caseInsensitive) != nil
+                $0.ocrText?.range(of: keyword, options: .caseInsensitive) != nil ||
+                $0.note?.range(of: keyword, options: .caseInsensitive) != nil
             }
         }
 
+        items = items.filter { $0.isFavorite } + items.filter { !$0.isFavorite }
         filteredItems = items
         // 过滤后重置选中到第一条
         selectedIndex = items.isEmpty ? nil : 0
@@ -561,6 +649,7 @@ enum ClipboardCategory: String, CaseIterable {
     case text
     case image
     case file
+    case favorites
 }
 
 @MainActor

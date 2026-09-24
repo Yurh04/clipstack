@@ -20,6 +20,7 @@ final class AppSettings: ObservableObject {
     var onPauseChange: ((Bool) -> Void)?
     var onMaintenance: (() -> Void)?
     var onStorageRefresh: (() -> Void)?
+    var onClearHistory: ((Bool) -> Void)?
     var onClearCache: (() -> Void)?
 
     private init() {
@@ -66,6 +67,8 @@ final class AppSettings: ObservableObject {
 struct ClipStackSettingsView: View {
     @ObservedObject var settings = AppSettings.shared
     @State private var confirmRetention = false
+    @State private var confirmClearHistory = false
+    @State private var includingFavorites = false
 
     var body: some View {
         Form {
@@ -104,6 +107,16 @@ struct ClipStackSettingsView: View {
                     Button("刷新占用") { settings.onStorageRefresh?() }
                     Button("清理可再生缓存") { settings.onClearCache?() }
                 }.disabled(settings.busy)
+                HStack {
+                    Button("清空普通历史…") {
+                        includingFavorites = false
+                        confirmClearHistory = true
+                    }
+                    Button("清空全部历史…", role: .destructive) {
+                        includingFavorites = true
+                        confirmClearHistory = true
+                    }
+                }.disabled(settings.busy)
                 if settings.busy { ProgressView().controlSize(.small) }
                 Text(settings.storageSummary).font(.caption).textSelection(.enabled)
             }
@@ -114,6 +127,14 @@ struct ClipStackSettingsView: View {
         .formStyle(.grouped)
         .frame(width: 540, height: 610)
         .onAppear { settings.refreshLogin(); settings.onStorageRefresh?() }
+        .confirmationDialog(includingFavorites ? "清空全部历史，包括收藏和备注？此操作不可撤销。" : "清空普通历史？收藏及其备注会保留。此操作不可撤销。", isPresented: $confirmClearHistory, titleVisibility: .visible) {
+            Button(includingFavorites ? "清空全部（含收藏）" : "清空普通历史", role: .destructive) {
+                settings.onClearHistory?(includingFavorites)
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("本地原文件不会删除。")
+        }
         .confirmationDialog("按当前规则删除过期或超出容量的普通历史？收藏和本地原文件不会删除。", isPresented: $confirmRetention) {
             Button("整理普通历史", role: .destructive) { settings.onMaintenance?() }
         }

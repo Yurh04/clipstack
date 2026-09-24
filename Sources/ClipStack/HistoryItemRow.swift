@@ -9,6 +9,7 @@ struct HistoryItemRow: View {
     let onTap: () -> Void
     let onCopy: (() -> Void)?
     let onFavorite: () -> Void
+    let onEditNote: () -> Void
 
     @State private var thumbnail: NSImage? = nil
 
@@ -21,6 +22,9 @@ struct HistoryItemRow: View {
                         .font(.system(size: 13))
                         .lineLimit(2)
                         .foregroundColor(.primary)
+                    if let note = item.note, !note.isEmpty {
+                        Text(note).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+                    }
                     HStack(spacing: 8) {
                         if let app = item.sourceApp {
                             Text(app)
@@ -38,6 +42,11 @@ struct HistoryItemRow: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
 
+            if item.isFavorite {
+                Button(action: onEditNote) { Image(systemName: "square.and.pencil") }
+                    .buttonStyle(.borderless)
+                    .help("编辑备注")
+            }
             Button(action: onFavorite) {
                 Image(systemName: item.isFavorite ? "star.fill" : "star")
                     .foregroundStyle(item.isFavorite ? .yellow : .secondary)
@@ -59,6 +68,7 @@ struct HistoryItemRow: View {
         .padding(.vertical, 8)
         .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
         .cornerRadius(6)
+        .contextMenu { Button("编辑备注…", action: onEditNote) }
         .task(id: item.id) {
             // 异步加载图片缩略图
             if item.type == .image {
