@@ -43,6 +43,14 @@ struct ImageGridCell: View {
                 .help(item.isFavorite ? "取消收藏" : "收藏")
                 .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
             }
+            .overlay(alignment: .bottomLeading) {
+                if !item.missingFilePaths.isEmpty {
+                    Label("文件失效", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(.white).padding(4)
+                        .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 4))
+                        .padding(5).allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
                 Text(timeAgo)
                     .font(.system(size: 9, weight: .medium))

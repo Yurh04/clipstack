@@ -41,11 +41,24 @@ actor ClipboardPipeline {
     }
 
     func maintain(store: HistoryStore, storage: ImageStorage, retentionDays: Int = 0) throws {
+        try store.finalizeDeletions()
         if retentionDays > 0,
            let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: Date()) {
             _ = try store.deleteExpired(olderThan: cutoff)
         }
         try store.enforceCapacityAndCleanupImages(imageStorage: storage)
+    }
+
+    func finalizeDeletions(store: HistoryStore, storage: ImageStorage) throws {
+        guard try store.finalizeDeletions() > 0 else { return }
+        let items = try store.all(includingPendingDeletion: true)
+        try storage.deleteUnreferencedFiles(validPaths: Set(items.filter { $0.type == .image }.map(\.content)))
+    }
+
+    func clearHistory(store: HistoryStore, storage: ImageStorage, includingFavorites: Bool) throws {
+        try store.deleteAll(includingFavorites: includingFavorites)
+        let remaining = try store.all(includingPendingDeletion: true)
+        try storage.deleteUnreferencedFiles(validPaths: Set(remaining.filter { $0.type == .image }.map(\.content)))
     }
 
     func bootstrap(store: HistoryStore, storage: ImageStorage) throws {

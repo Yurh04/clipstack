@@ -78,6 +78,12 @@ public final class HistoryStore: Sendable {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            try db.alter(table: ClipboardItem.databaseTableName) { t in
+                t.add(column: "deletionDeadline", .datetime)
+                t.add(column: "tags", .text)
+            }
+        }
         try migrator.migrate(dbQueue)
     }
 
@@ -93,6 +99,7 @@ public final class HistoryStore: Sendable {
 
             if item.type == .image, let contentHash = item.contentHash {
                 if let existing = try ClipboardItem
+                    .filter(ClipboardItem.Columns.deletionDeadline == nil)
                     .filter(ClipboardItem.Columns.type == ClipboardItemType.image.rawValue)
                     .filter(ClipboardItem.Columns.contentHash == contentHash)
                     .order(ClipboardItem.Columns.createdAt.desc)
@@ -118,6 +125,7 @@ public final class HistoryStore: Sendable {
 
             // 文本和普通文件保留原来的连续重复去重逻辑。
             if let latest = try ClipboardItem
+                .filter(ClipboardItem.Columns.deletionDeadline == nil)
                 .order(ClipboardItem.Columns.createdAt.desc)
                 .limit(1)
                 .fetchOne(db),
@@ -154,9 +162,10 @@ public final class HistoryStore: Sendable {
     }
 
     /// 获取全部历史（按拷贝时间倒序）
-    public func all() throws -> [ClipboardItem] {
+    public func all(includingPendingDeletion: Bool = false) throws -> [ClipboardItem] {
         try dbQueue.read { db in
             try ClipboardItem
+                .filter(includingPendingDeletion || ClipboardItem.Columns.deletionDeadline == nil)
                 .order(ClipboardItem.Columns.createdAt.desc)
                 .fetchAll(db)
         }
@@ -165,7 +174,7 @@ public final class HistoryStore: Sendable {
     /// 按条件查询
     public func items(matching filter: HistoryFilter) throws -> [ClipboardItem] {
         try dbQueue.read { db in
-            var query = ClipboardItem.all()
+            var query = ClipboardItem.filter(ClipboardItem.Columns.deletionDeadline == nil)
 
             if let type = filter.type {
                 query = query.filter(ClipboardItem.Columns.type == type.rawValue)
@@ -185,6 +194,32 @@ public final class HistoryStore: Sendable {
         }
     }
 
+    public func scheduleDeletion(id: Int64, now: Date = Date()) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id), item.deletionDeadline == nil else { return }
+            item.deletionDeadline = now.addingTimeInterval(10)
+            try item.update(db)
+        }
+    }
+
+    @discardableResult
+    public func undoDeletion(id: Int64, now: Date = Date()) throws -> Bool {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id),
+                  let deadline = item.deletionDeadline, deadline > now else { return false }
+            item.deletionDeadline = nil
+            try item.update(db)
+            return true
+        }
+    }
+
+    @discardableResult
+    public func finalizeDeletions(now: Date = Date()) throws -> Int {
+        try dbQueue.write { db in
+            try ClipboardItem.filter(ClipboardItem.Columns.deletionDeadline <= now).deleteAll(db)
+        }
+    }
+
     public func updateFavorite(id: Int64, isFavorite: Bool) throws {
         try dbQueue.write { db in
             guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
@@ -197,6 +232,16 @@ public final class HistoryStore: Sendable {
         try dbQueue.write { db in
             guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
             item.ocrText = text
+            try item.update(db)
+        }
+    }
+
+    public func updateTags(id: Int64, tags: String) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
+            item.tags = tags
+            let names = item.tagNames
+            item.tags = names.isEmpty ? nil : names.joined(separator: ", ")
             try item.update(db)
         }
     }
@@ -215,6 +260,7 @@ public final class HistoryStore: Sendable {
         try dbQueue.write { db in
             let items = try ClipboardItem
                 .filter(ClipboardItem.Columns.isFavorite == false)
+                .filter(ClipboardItem.Columns.deletionDeadline == nil)
                 .filter(ClipboardItem.Columns.createdAt < date)
                 .fetchAll(db)
             for item in items { _ = try item.delete(db) }
@@ -235,13 +281,15 @@ public final class HistoryStore: Sendable {
     @discardableResult
     public func enforceCapacity() throws -> [ClipboardItem] {
         try dbQueue.write { db in
-            let normalCount = try ClipboardItem.filter(ClipboardItem.Columns.isFavorite == false).fetchCount(db)
+            let normalCount = try ClipboardItem.filter(ClipboardItem.Columns.isFavorite == false)
+                .filter(ClipboardItem.Columns.deletionDeadline == nil).fetchCount(db)
             guard normalCount > maxItems else { return [] }
 
             let toDelete = normalCount - maxItems
             // 查出最旧的 N 条普通历史；收藏永不因容量淘汰
             let oldest = try ClipboardItem
                 .filter(ClipboardItem.Columns.isFavorite == false)
+                .filter(ClipboardItem.Columns.deletionDeadline == nil)
                 .order(ClipboardItem.Columns.createdAt.asc)
                 .limit(toDelete)
                 .fetchAll(db)
@@ -258,7 +306,7 @@ public final class HistoryStore: Sendable {
     /// 执行容量限制，并清理 images 目录中已经没有数据库记录引用的图片。
     public func enforceCapacityAndCleanupImages(imageStorage: ImageStorage) throws {
         try enforceCapacity()
-        let items = try all()
+        let items = try all(includingPendingDeletion: true)
         let validPaths = Set(items.filter { $0.type == .image }.map(\.content))
         try imageStorage.deleteUnreferencedFiles(validPaths: validPaths)
     }

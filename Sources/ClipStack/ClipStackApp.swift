@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var historyStore: HistoryStore!
     private var imageStorage: ImageStorage!
     private var clipboardMonitor: ClipboardMonitor!
+    private var deletionCleanupTask: Task<Void, Never>?
     private var pasteService: PasteService!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -52,6 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             PasteService.requestAccessibilityPermission()
         }
         clipboardMonitor.start()
+        let store = historyStore!, storage = imageStorage!
+        deletionCleanupTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                    try await ClipboardPipeline.shared.finalizeDeletions(store: store, storage: storage)
+                } catch is CancellationError { return }
+                catch { AppSettings.shared.message = "删除清理失败：\(error.localizedDescription)" }
+            }
+        }
 
         // 菜单栏图标
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -82,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let window {
             persistWindowOrigin(window.frame.origin)
         }
+        deletionCleanupTask?.cancel()
         clipboardMonitor.stop()
     }
 
@@ -110,13 +122,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func clearHistory(includingFavorites: Bool) {
-        do {
-            try historyStore.deleteAll(includingFavorites: includingFavorites)
-            let remaining = try historyStore.all()
-            try imageStorage.deleteUnreferencedFiles(validPaths: Set(remaining.filter { $0.type == .image }.map(\.content)))
-            AppSettings.shared.message = includingFavorites ? "全部历史已清空。" : "普通历史已清空，收藏已保留。"
-            refreshStorageSummary()
-        } catch { AppSettings.shared.message = "清空失败：\(error.localizedDescription)" }
+        let store = historyStore!, storage = imageStorage!
+        AppSettings.shared.busy = true
+        Task {
+            defer { AppSettings.shared.busy = false }
+            do {
+                try await ClipboardPipeline.shared.clearHistory(store: store, storage: storage, includingFavorites: includingFavorites)
+                AppSettings.shared.message = includingFavorites ? "全部历史已清空。" : "普通历史已清空，收藏已保留。"
+                refreshStorageSummary()
+            } catch { AppSettings.shared.message = "清空失败：\(error.localizedDescription)" }
+        }
     }
 
     private func clearRegenerableCaches() {

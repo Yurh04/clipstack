@@ -10,6 +10,8 @@ struct HistoryItemRow: View {
     let onCopy: (() -> Void)?
     let onFavorite: () -> Void
     let onEditNote: () -> Void
+    let onDelete: () -> Void
+    let onPreviewText: () -> Void
 
     @State private var thumbnail: NSImage? = nil
 
@@ -24,6 +26,14 @@ struct HistoryItemRow: View {
                         .foregroundColor(.primary)
                     if let note = item.note, !note.isEmpty {
                         Text(note).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+                    }
+                    if !item.tagNames.isEmpty {
+                        Text(item.tagNames.map { "#" + $0 }.joined(separator: " "))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if !item.missingFilePaths.isEmpty {
+                        Label("文件已不存在或无法访问", systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
                     }
                     HStack(spacing: 8) {
                         if let app = item.sourceApp {
@@ -42,6 +52,13 @@ struct HistoryItemRow: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
 
+            if item.type == .text {
+                Button(action: onPreviewText) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.borderless)
+                .help("预览全文")
+            }
             if item.isFavorite {
                 Button(action: onEditNote) { Image(systemName: "square.and.pencil") }
                     .buttonStyle(.borderless)
@@ -68,7 +85,13 @@ struct HistoryItemRow: View {
         .padding(.vertical, 8)
         .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
         .cornerRadius(6)
-        .contextMenu { Button("编辑备注…", action: onEditNote) }
+        .contextMenu {
+            if item.type == .text {
+                Button("预览全文", action: onPreviewText)
+            }
+            Button("编辑备注与标签…", action: onEditNote)
+            Button("删除记录", role: .destructive, action: onDelete)
+        }
         .task(id: item.id) {
             // 异步加载图片缩略图
             if item.type == .image {

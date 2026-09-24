@@ -7,6 +7,7 @@ import ClipStackCore
 @MainActor
 public struct HistoryPanelView: View {
     @StateObject private var viewModel: HistoryPanelViewModel
+    @State private var showSearchHelp = false
     @FocusState private var searchFocused: Bool
     @AppStorage("ClipStack.pinned") private var isWindowPinned = true
 
@@ -46,6 +47,10 @@ public struct HistoryPanelView: View {
             categoryPicker
             if viewModel.selectedCategory == .favorites {
                 favoriteTypePicker
+                Picker("收藏标签", selection: $viewModel.selectedTag) {
+                    Text("全部标签").tag("")
+                    ForEach(viewModel.availableTags, id: \.self) { Text($0).tag($0) }
+                }.padding(.horizontal, 16).padding(.bottom, 8)
             }
             Divider()
             if viewModel.filteredItems.isEmpty {
@@ -53,6 +58,18 @@ public struct HistoryPanelView: View {
             } else {
                 historyList
             }
+            if !viewModel.pendingDeletions.isEmpty {
+                HStack {
+                    Text("已删除 \(viewModel.pendingDeletions.count) 条 · 10 秒内可撤销")
+                    Spacer()
+                    Button("撤销最近一次") { viewModel.undoLastDeletion() }
+                }.font(.caption).padding(10)
+            }
+            if !viewModel.operationMessage.isEmpty {
+                Text(viewModel.operationMessage).font(.caption).foregroundStyle(.secondary).padding(6)
+            }
+            Text("↑↓ 选择 · ⌘C 复制 · ↩ 粘贴 · ⌘⇧S 收藏 · ⌘⌫ 删除 · ⌘Z 撤销")
+                .font(.system(size: 10)).foregroundStyle(.secondary).padding(6)
         }
         .frame(minWidth: 420, minHeight: 320)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -66,23 +83,44 @@ public struct HistoryPanelView: View {
                 dropOverlay
             }
         }
+        .onKeyPress(keys: ["s"]) { press in
+            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers == [.command, .shift],
+                  let item = viewModel.selectedItem else { return .ignored }
+            viewModel.toggleFavorite(item: item)
+            return .handled
+        }
+        .onKeyPress(keys: [.delete]) { press in
+            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers.contains(.command),
+                  let item = viewModel.selectedItem else { return .ignored }
+            viewModel.delete(item: item)
+            return .handled
+        }
+        .onKeyPress(keys: ["z"]) { press in
+            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers == .command,
+                  !viewModel.pendingDeletions.isEmpty else { return .ignored }
+            viewModel.undoLastDeletion()
+            return .handled
+        }
         .onKeyPress(.upArrow) {
+            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
             searchFocused = false
             viewModel.moveSelectionUp()
             return .handled
         }
         .onKeyPress(.downArrow) {
+            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
             searchFocused = false
             viewModel.moveSelectionDown()
             return .handled
         }
         .onKeyPress(.return) {
+            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
             viewModel.pasteSelected()
             return .handled
         }
         // 空格键：预览选中图片
         .onKeyPress(.space) {
-            guard viewModel.canPreviewSelected else { return .ignored }
+            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, viewModel.canPreviewSelected else { return .ignored }
             viewModel.previewSelected()
             return .handled
         }
@@ -100,10 +138,14 @@ public struct HistoryPanelView: View {
         }
         .alert("编辑备注", isPresented: $viewModel.isEditingNote) {
             TextField("例如：测试环境地址", text: $viewModel.noteDraft)
+            TextField("标签，以逗号分隔：工作, 学习", text: $viewModel.tagsDraft)
             Button("保存") { viewModel.saveNote() }
             Button("取消", role: .cancel) { viewModel.cancelEditingNote() }
         } message: {
-            Text("备注会参与搜索。留空可删除备注。")
+            Text("备注和标签均参与搜索。留空可清除。")
+        }
+        .sheet(item: $viewModel.textPreviewItem) { wrapper in
+            TextPreviewView(item: wrapper.item, onCopy: { viewModel.copy(item: wrapper.item) })
         }
         .sheet(item: $viewModel.previewItem) { wrapper in
             ImagePreviewView(
@@ -119,7 +161,7 @@ public struct HistoryPanelView: View {
                 EmptyView()
             }
             .keyboardShortcut(.space, modifiers: [])
-            .disabled(!viewModel.canPreviewSelected)
+            .disabled(!viewModel.canPreviewSelected || searchFocused || viewModel.isEditingNote || viewModel.textPreviewItem != nil)
             .opacity(0.001)
             .frame(width: 1, height: 1)
         }
@@ -128,7 +170,7 @@ public struct HistoryPanelView: View {
                 EmptyView()
             }
             .keyboardShortcut("c", modifiers: [.command])
-            .disabled(!viewModel.canCopySelected || searchFocused)
+            .disabled(!viewModel.canCopySelected || searchFocused || viewModel.textPreviewItem != nil || viewModel.isEditingNote)
             .opacity(0.001)
             .frame(width: 1, height: 1)
         }
@@ -154,16 +196,26 @@ public struct HistoryPanelView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundColor(.secondary)
-            TextField("搜索剪贴板历史", text: $viewModel.searchText)
+            TextField("搜索内容、备注、标签", text: $viewModel.searchText)
+                .help("支持 app:Chrome type:image after:7d tag:学习；空格组合条件，双引号包裹短语")
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($searchFocused)
-                .onKeyPress(.space) {
-                    guard viewModel.canPreviewSelected else { return .ignored }
-                    viewModel.previewSelected()
-                    return .handled
-                }
 
+            Button { showSearchHelp.toggle() } label: {
+                Image(systemName: "questionmark.circle")
+            }
+            .buttonStyle(.borderless)
+            .help("搜索语法与快捷键")
+            .popover(isPresented: $showSearchHelp) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("组合搜索").font(.headline)
+                    Text("app:Chrome  来源应用\ntype:image  图片（也支持 text、file）\nafter:7d  最近 7 天\ntag:学习  指定标签")
+                    Text("例如：app:Chrome type:image after:7d")
+                    Text("多个条件用空格分隔；完整短语用双引号包裹。")
+                    Text("在搜索框外使用 ⌘⇧S 收藏、⌘⌫ 删除、⌘Z 撤销最近一次删除。")
+                }.font(.caption).padding().frame(width: 330)
+            }
             Button(action: toggleWindowPinned) {
                 Image(systemName: isWindowPinned ? "pin.fill" : "pin.slash")
                     .font(.system(size: 14, weight: .medium))
@@ -276,7 +328,8 @@ public struct HistoryPanelView: View {
                 .aspectRatio(1, contentMode: .fit)
                 .id(index)
                 .contextMenu {
-                    Button("编辑备注…") { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
+                    Button("删除记录", role: .destructive) { viewModel.delete(item: viewModel.filteredItems[index]) }
+                    Button("编辑备注与标签…") { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
                     Button(viewModel.filteredItems[index].isFavorite ? "取消收藏" : "收藏") {
                         viewModel.toggleFavorite(item: viewModel.filteredItems[index])
                     }
@@ -313,7 +366,9 @@ public struct HistoryPanelView: View {
                         viewModel.copy(item: viewModel.filteredItems[index])
                     },
                     onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) },
-                    onEditNote: { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
+                    onEditNote: { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) },
+                    onDelete: { viewModel.delete(item: viewModel.filteredItems[index]) },
+                    onPreviewText: { viewModel.previewText(item: viewModel.filteredItems[index]) }
                 )
                 .id(index)
             }
@@ -422,6 +477,16 @@ final class HistoryPanelViewModel: ObservableObject {
     @Published var selectedIndex: Int? = 0
     @Published var filteredItems: [ClipboardItem] = []
     @Published var previewItem: PreviewWrapper? = nil  // 空格键触发的大图预览
+    @Published var textPreviewItem: PreviewWrapper? = nil
+    @Published var operationMessage = ""
+    @Published var pendingDeletions: [(id: Int64, deadline: Date)] = []
+    @Published var selectedTag = "" { didSet { applyFilter() } }
+    @Published var tagsDraft = ""
+    var availableTags: [String] { Array(Set(allItems.filter(\.isFavorite).flatMap(\.tagNames))).sorted() }
+    var selectedItem: ClipboardItem? {
+        guard let index = selectedIndex, filteredItems.indices.contains(index) else { return nil }
+        return filteredItems[index]
+    }
     @Published var isEditingNote = false
     @Published var noteDraft = ""
     private var editingNoteID: Int64?
@@ -451,7 +516,12 @@ final class HistoryPanelViewModel: ObservableObject {
 
     func reload() {
         do {
-            allItems = try historyStore.all()
+            let stored = try historyStore.all(includingPendingDeletion: true)
+            allItems = stored.filter { $0.deletionDeadline == nil }
+            pendingDeletions = stored.compactMap { item in
+                guard let id = item.id, let deadline = item.deletionDeadline, deadline > Date() else { return nil }
+                return (id, deadline)
+            }.sorted { $0.deadline < $1.deadline }
             applyFilter()
         } catch {
             print("加载历史记录失败: \(error)")
@@ -487,6 +557,7 @@ final class HistoryPanelViewModel: ObservableObject {
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
+            pendingDeletions.removeAll { $0.deadline <= Date() }
             reloadIfChanged()
         }
     }
@@ -534,16 +605,56 @@ final class HistoryPanelViewModel: ObservableObject {
 
     func pasteSelected() {
         guard let index = selectedIndex, filteredItems.indices.contains(index) else { return }
+        guard validateFiles(filteredItems[index]) else { return }
         onPaste(filteredItems[index])
     }
 
     func copySelected() {
         guard let index = selectedIndex, filteredItems.indices.contains(index) else { return }
-        onCopy(filteredItems[index])
+        copy(item: filteredItems[index])
     }
 
     func copy(item: ClipboardItem) {
+        guard validateFiles(item) else { return }
         onCopy(item)
+    }
+
+    private func validateFiles(_ item: ClipboardItem) -> Bool {
+        guard item.missingFilePaths.isEmpty else {
+            operationMessage = "文件已不存在或无法访问，请检查原文件位置。"
+            return false
+        }
+        operationMessage = ""
+        return true
+    }
+
+    func delete(item: ClipboardItem) {
+        guard let id = item.id else { return }
+        do {
+            let now = Date()
+            try historyStore.scheduleDeletion(id: id, now: now)
+            pendingDeletions.append((id, now.addingTimeInterval(10)))
+            reload()
+            let store = historyStore, storage = imageStorage
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                do { try await ClipboardPipeline.shared.finalizeDeletions(store: store, storage: storage) }
+                catch { self?.operationMessage = "删除清理失败：\(error.localizedDescription)" }
+                self?.pendingDeletions.removeAll { $0.deadline <= Date() }
+            }
+        } catch { operationMessage = "删除失败：\(error.localizedDescription)" }
+    }
+
+    func undoLastDeletion() {
+        pendingDeletions.removeAll { $0.deadline <= Date() }
+        guard let pending = pendingDeletions.last else { return }
+        do {
+            let restored = try historyStore.undoDeletion(id: pending.id)
+            pendingDeletions.removeLast()
+            reload()
+            if restored { selectedIndex = filteredItems.firstIndex { $0.id == pending.id } ?? selectedIndex }
+            else { operationMessage = "撤销时间已过，或记录已被清空。" }
+        } catch { operationMessage = "撤销失败：\(error.localizedDescription)" }
     }
 
     func saveOCRText(_ text: String, for item: ClipboardItem) {
@@ -565,6 +676,7 @@ final class HistoryPanelViewModel: ObservableObject {
     func beginEditingNote(item: ClipboardItem) {
         editingNoteID = item.id
         noteDraft = item.note ?? ""
+        tagsDraft = item.tags ?? ""
         isEditingNote = true
     }
 
@@ -577,16 +689,23 @@ final class HistoryPanelViewModel: ObservableObject {
         guard let id = editingNoteID else { return }
         do {
             try historyStore.updateNote(id: id, note: noteDraft)
+            try historyStore.updateTags(id: id, tags: tagsDraft)
             cancelEditingNote()
             reload()
             selectedIndex = filteredItems.firstIndex(where: { $0.id == id }) ?? selectedIndex
         } catch { AppSettings.shared.message = "备注保存失败：\(error.localizedDescription)" }
     }
 
+    func previewText(item: ClipboardItem) {
+        guard item.type == .text else { return }
+        textPreviewItem = PreviewWrapper(item: item)
+    }
+
     func previewSelected() {
         guard let index = selectedIndex,
               filteredItems.indices.contains(index),
               filteredItems[index].type == .image else { return }
+        guard validateFiles(filteredItems[index]) else { return }
         previewItem = PreviewWrapper(item: filteredItems[index])
     }
 
@@ -625,15 +744,10 @@ final class HistoryPanelViewModel: ObservableObject {
             items = items.filter { $0.type == favoriteType }
         }
 
-        // 搜索过滤（大小写不敏感子串）
-        let keyword = searchText.trimmingCharacters(in: .whitespaces)
-        if !keyword.isEmpty {
-            items = items.filter {
-                $0.content.range(of: keyword, options: .caseInsensitive) != nil ||
-                $0.ocrText?.range(of: keyword, options: .caseInsensitive) != nil ||
-                $0.note?.range(of: keyword, options: .caseInsensitive) != nil
-            }
+        if selectedCategory == .favorites, !selectedTag.isEmpty {
+            items = items.filter { $0.tagNames.contains(selectedTag) }
         }
+        items = items.filter { HistorySearch.matches($0, query: searchText) }
 
         items = items.filter { $0.isFavorite } + items.filter { !$0.isFavorite }
         filteredItems = items

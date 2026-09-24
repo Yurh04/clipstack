@@ -32,6 +32,8 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
     public var isFavorite: Bool
     /// 用户为收藏记录添加的可搜索备注
     public var note: String?
+    public var tags: String?
+    public var deletionDeadline: Date?
 
     public init(
         id: Int64? = nil,
@@ -55,5 +57,7 @@ public struct ClipboardItem: Identifiable, Equatable, Sendable, Codable {
         self.ocrText = ocrText
         self.isFavorite = isFavorite
         self.note = note
+        self.deletionDeadline = nil
+        self.tags = nil
     }
 }
