@@ -7,6 +7,8 @@ struct ImageGridCell: View {
     let isSelected: Bool
     let imageStorage: ImageStorage
     let onFavorite: () -> Void
+    let onCopy: () -> Void
+    let onSelect: () -> Void
     let onPreview: () -> Void
 
     @State private var thumbnail: NSImage? = nil
@@ -29,7 +31,8 @@ struct ImageGridCell: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
-            .onTapGesture(perform: onPreview)
+            .onTapGesture(count: 2, perform: onPreview)
+            .onTapGesture(perform: onSelect)
             .overlay(alignment: .topLeading) {
                 Button(action: onFavorite) {
                     Image(systemName: item.isFavorite ? "star.fill" : "star")
@@ -42,6 +45,19 @@ struct ImageGridCell: View {
                 .padding(7)
                 .help(item.isFavorite ? "取消收藏" : "收藏")
                 .accessibilityLabel(item.isFavorite ? "取消收藏" : "收藏")
+            }
+            .overlay(alignment: .topTrailing) {
+                Button(action: onCopy) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(6)
+                        .background(Color.black.opacity(0.65), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(7)
+                .help("复制图片")
+                .accessibilityLabel("复制图片")
             }
             .overlay(alignment: .bottomLeading) {
                 if !item.missingFilePaths.isEmpty {

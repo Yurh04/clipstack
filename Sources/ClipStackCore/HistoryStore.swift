@@ -228,6 +228,14 @@ public final class HistoryStore: Sendable {
         }
     }
 
+    public func updateContent(id: Int64, content: String) throws {
+        try dbQueue.write { db in
+            guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }
+            item.content = content
+            try item.update(db)
+        }
+    }
+
     public func updateOCRText(id: Int64, text: String) throws {
         try dbQueue.write { db in
             guard var item = try ClipboardItem.fetchOne(db, key: id) else { return }

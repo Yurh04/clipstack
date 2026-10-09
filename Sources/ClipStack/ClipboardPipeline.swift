@@ -63,6 +63,7 @@ actor ClipboardPipeline {
 
     func bootstrap(store: HistoryStore, storage: ImageStorage) throws {
         try store.backfillImageHashes(with: storage)
+        try FavoriteStorage().materializeFavorites(in: store)
         try maintain(store: store, storage: storage, retentionDays: UserDefaults.standard.integer(forKey: "ClipStack.retentionDays"))
     }
 

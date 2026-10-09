@@ -23,7 +23,14 @@ public final class PasteService {
 
     /// 记住当前前台应用（在面板弹出前调用）
     public func rememberFrontmostApp() {
-        rememberedApp = NSWorkspace.shared.frontmostApplication
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        rememberedApp = app
+    }
+
+    public func restorePreviousApplication() {
+        guard let app = rememberedApp, !app.isTerminated else { return }
+        app.activate()
     }
 
     /// 是否已获得辅助功能（Accessibility）权限，模拟按键需要此权限
@@ -42,6 +49,7 @@ public final class PasteService {
     /// 将历史项粘贴到记住的应用（激活 → 写剪贴板 → 模拟 Cmd+V）
     @discardableResult
     public func paste(item: ClipboardItem) -> Bool {
+        guard item.missingFilePaths.isEmpty else { return false }
         // 1. 重新激活目标应用
         if let app = rememberedApp {
             app.activate()
@@ -52,8 +60,7 @@ public final class PasteService {
         guard copyToPasteboard(item: item) else { return false }
 
         // 3. 模拟 Cmd+V
-        simulatePaste()
-        return true
+        return simulatePaste()
     }
 
     /// 只写回系统剪贴板，不切换应用，也不模拟粘贴。
@@ -137,25 +144,25 @@ public final class PasteService {
 
     // MARK: - 按键模拟
 
-    private func simulatePaste() {
-        // 发送 Cmd+V 按下
-        if let keyDownEvent = CGEvent(
-            keyboardEventSource: nil,
-            virtualKey: 0x09,  // V 键的虚拟键码
-            keyDown: true
-        ) {
-            keyDownEvent.flags = .maskCommand
-            keyDownEvent.post(tap: .cghidEventTap)
-        }
+    /// Sends to the currently focused application without activating a previous target.
+    public func pasteIntoCurrentApplication(item: ClipboardItem) -> Bool {
+        guard Self.hasAccessibilityPermission,
+              let target = NSWorkspace.shared.frontmostApplication,
+              target.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+              item.missingFilePaths.isEmpty else { return false }
+        guard copyToPasteboard(item: item),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else { return false }
+        return simulatePaste()
+    }
 
-        // 发送 Cmd+V 松开
-        if let keyUpEvent = CGEvent(
-            keyboardEventSource: nil,
-            virtualKey: 0x09,
-            keyDown: false
-        ) {
-            keyUpEvent.flags = .maskCommand
-            keyUpEvent.post(tap: .cghidEventTap)
-        }
+    @discardableResult
+    private func simulatePaste() -> Bool {
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: 0x09, keyDown: false) else { return false }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        return true
     }
 }

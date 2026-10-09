@@ -6,6 +6,11 @@ import ServiceManagement
 @MainActor
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
+    @Published var sequenceNextID: Int64?
+    @Published var sequenceActive = false
+    @Published var sequenceStatus = ""
+    var onStartSequence: (([Int64]) -> Void)?
+    var onStopSequence: (() -> Void)?
     @Published var paused = false
     @Published var loginEnabled = false
     @Published var message = ""
@@ -71,7 +76,8 @@ struct ClipStackSettingsView: View {
     @State private var includingFavorites = false
 
     var body: some View {
-        Form {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
             Section("通用") {
                 Toggle("登录时启动 ClipStack", isOn: Binding(
                     get: { settings.loginEnabled }, set: { settings.setLogin($0) }))
@@ -123,9 +129,13 @@ struct ClipStackSettingsView: View {
             if !settings.message.isEmpty {
                 Text(settings.message).foregroundStyle(.secondary).textSelection(.enabled)
             }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .formStyle(.grouped)
-        .frame(width: 540, height: 610)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .foregroundStyle(.primary)
+        .frame(minWidth: 540, minHeight: 610)
         .onAppear { settings.refreshLogin(); settings.onStorageRefresh?() }
         .confirmationDialog(includingFavorites ? "清空全部历史，包括收藏和备注？此操作不可撤销。" : "清空普通历史？收藏及其备注会保留。此操作不可撤销。", isPresented: $confirmClearHistory, titleVisibility: .visible) {
             Button(includingFavorites ? "清空全部（含收藏）" : "清空普通历史", role: .destructive) {

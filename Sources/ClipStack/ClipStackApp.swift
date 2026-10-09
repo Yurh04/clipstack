@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var imageStorage: ImageStorage!
     private var clipboardMonitor: ClipboardMonitor!
     private var deletionCleanupTask: Task<Void, Never>?
+    private var pasteQueue = SequentialPasteQueue()
+    private var lastSequencePaste = Date.distantPast
     private var pasteService: PasteService!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -83,9 +85,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         AppSettings.shared.onClearHistory = { [weak self] includingFavorites in self?.clearHistory(includingFavorites: includingFavorites) }
         AppSettings.shared.onClearCache = { [weak self] in self?.clearRegenerableCaches() }
 
+        AppSettings.shared.onStartSequence = { [weak self] ids in
+            guard let self, !ids.isEmpty else { return }
+            self.pasteQueue.start(ids: ids)
+            AppSettings.shared.sequenceActive = true
+            self.updateSequenceStatus()
+            self.closeWindow()
+            self.pasteService.restorePreviousApplication()
+        }
+        AppSettings.shared.onStopSequence = { [weak self] in self?.stopSequence() }
+        KeyboardShortcuts.onKeyUp(for: .pasteNext) { [weak self] in self?.pasteNextInSequence() }
+
         // 全局快捷键 ⌘⌃J
         KeyboardShortcuts.onKeyUp(for: .togglePanel) { [weak self] in
             self?.toggleWindow()
+        }
+    }
+
+    private func updateSequenceStatus() {
+        AppSettings.shared.sequenceNextID = pasteQueue.nextID
+        let status = "顺序粘贴 \(pasteQueue.position)/\(pasteQueue.ids.count) · ⌘⌃V 下一条"
+        AppSettings.shared.sequenceStatus = status
+        statusItem.button?.title = " \(pasteQueue.position)/\(pasteQueue.ids.count)"
+        statusItem.button?.toolTip = status
+    }
+
+    @objc private func stopSequence() {
+        pasteQueue.stop()
+        AppSettings.shared.sequenceNextID = nil
+        AppSettings.shared.sequenceActive = false
+        AppSettings.shared.sequenceStatus = ""
+        statusItem.button?.title = ""
+        statusItem.button?.toolTip = "ClipStack · 左键打开，右键设置"
+    }
+
+    private func pasteNextInSequence() {
+        guard let id = pasteQueue.nextID else {
+            AppSettings.shared.sequenceStatus = "请先选择正序或倒序，再点击“开始顺序粘贴”"
+            AppSettings.shared.message = "顺序粘贴尚未启动。"
+            showWindow()
+            return
+        }
+        guard Date().timeIntervalSince(lastSequencePaste) > 0.4 else { return }
+        guard PasteService.hasAccessibilityPermission else {
+            AppSettings.shared.sequenceStatus = "请先授予辅助功能权限，再按 ⌘⌃V 重试"
+            showSequenceError()
+            NSSound.beep()
+            return
+        }
+        do {
+            guard let item = try historyStore.all().first(where: { $0.id == id }),
+                  item.missingFilePaths.isEmpty else {
+                AppSettings.shared.sequenceStatus = "下一条已删除或文件失效，队列未前进；请停止后重新选择"
+                showSequenceError()
+                NSSound.beep()
+                return
+            }
+            let sent = pasteService.pasteIntoCurrentApplication(item: item)
+            clipboardMonitor.ignorePasteboardChangeCount(NSPasteboard.general.changeCount)
+            guard sent else {
+                AppSettings.shared.sequenceStatus = "未发送粘贴，请聚焦目标应用的输入框后重试"
+                showSequenceError()
+                NSSound.beep()
+                return
+            }
+            lastSequencePaste = Date()
+            pasteQueue.advance()
+            updateSequenceStatus()
+            if pasteQueue.nextID == nil {
+                let count = pasteQueue.ids.count
+                stopSequence()
+                AppSettings.shared.sequenceStatus = "已发送全部 \(count) 条粘贴"
+            }
+        } catch {
+            AppSettings.shared.sequenceStatus = "读取失败：\(error.localizedDescription)"
+            showSequenceError()
+        }
+    }
+
+    private func showSequenceError() {
+        let alert = NSAlert()
+        alert.messageText = "顺序粘贴未发送"
+        alert.informativeText = AppSettings.shared.sequenceStatus
+        alert.addButton(withTitle: "知道了")
+        let needsPermission = !PasteService.hasAccessibilityPermission
+        if needsPermission { alert.addButton(withTitle: "打开辅助功能设置") }
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -159,6 +247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             item.target = self
             menu.addItem(item)
         }
+        if AppSettings.shared.sequenceActive {
+            menu.addItem(.separator())
+            let stop = NSMenuItem(title: "停止顺序粘贴", action: #selector(stopSequence), keyEquivalent: "")
+            stop.target = self
+            menu.addItem(stop)
+        }
         guard let button = statusItem.button else { return }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.minY), in: button)
     }
@@ -169,10 +263,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func openSettings() {
         if settingsWindow == nil {
             let controller = NSHostingController(rootView: ClipStackSettingsView())
-            let w = NSWindow(contentViewController: controller)
+            let w = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 540, height: 610),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            w.contentViewController = controller
             w.title = "ClipStack 设置"
-            w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
+            w.minSize = NSSize(width: 480, height: 480)
             w.center()
             settingsWindow = w
         }

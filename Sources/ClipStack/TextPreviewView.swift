@@ -28,6 +28,7 @@ struct TextPreviewView: View {
                     .keyboardShortcut(.cancelAction)
             }
             .padding(12)
+            .background(.regularMaterial)
             Divider()
             ScrollView(.vertical) {
                 Text(item.content)

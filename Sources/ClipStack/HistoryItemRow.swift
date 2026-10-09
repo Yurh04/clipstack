@@ -51,6 +51,7 @@ struct HistoryItemRow: View {
             }
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
+            .onTapGesture(count: 2, perform: onPreviewText)
 
             if item.type == .text {
                 Button(action: onPreviewText) {
@@ -83,8 +84,16 @@ struct HistoryItemRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
-        .cornerRadius(6)
+        .background(
+            isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.accentColor.opacity(0.35), lineWidth: 1)
+            }
+        }
         .contextMenu {
             if item.type == .text {
                 Button("预览全文", action: onPreviewText)

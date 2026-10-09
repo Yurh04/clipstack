@@ -6,7 +6,14 @@ import ClipStackCore
 /// 历史面板主视图
 @MainActor
 public struct HistoryPanelView: View {
+    private enum SequenceOrder: String, CaseIterable, Identifiable {
+        case ascending = "正序"
+        case descending = "倒序"
+        var id: String { rawValue }
+    }
     @StateObject private var viewModel: HistoryPanelViewModel
+    @ObservedObject private var sequenceSettings = AppSettings.shared
+    @AppStorage("ClipStack.sequenceOrder") private var sequenceOrder: SequenceOrder = .ascending
     @State private var showSearchHelp = false
     @FocusState private var searchFocused: Bool
     @AppStorage("ClipStack.pinned") private var isWindowPinned = true
@@ -45,6 +52,44 @@ public struct HistoryPanelView: View {
         VStack(spacing: 0) {
             searchField
             categoryPicker
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    if sequenceSettings.sequenceActive {
+                        Text(sequenceSettings.sequenceStatus).font(.caption)
+                        Spacer()
+                        Button("停止") { sequenceSettings.onStopSequence?() }
+                    } else {
+                        Picker("", selection: $sequenceOrder) {
+                            ForEach(SequenceOrder.allCases) { order in
+                                Text(order.rawValue).tag(order)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 104)
+                        Button("开始") {
+                            guard let index = viewModel.selectedIndex,
+                                  viewModel.filteredItems.indices.contains(index) else { return }
+                            let ids: [Int64]
+                            if sequenceOrder == .ascending {
+                                ids = viewModel.filteredItems[index...].compactMap(\.id)
+                            } else {
+                                ids = Array(viewModel.filteredItems[...index].compactMap(\.id).reversed())
+                            }
+                            sequenceSettings.onStartSequence?(ids)
+                        }
+                        .disabled(viewModel.selectedIndex == nil)
+                        .help("正序从选中项向后，倒序从选中项向前。⌘⌃V 每次粘贴一条")
+                        Spacer()
+                    }
+                }
+                if !sequenceSettings.sequenceActive {
+                    Text(sequenceSettings.sequenceStatus.isEmpty
+                         ? "\(sequenceOrder == .ascending ? "选中项向后" : "选中项向前") · ⌘⌃V 下一条"
+                         : sequenceSettings.sequenceStatus)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.horizontal, 16).padding(.bottom, 8)
+
             if viewModel.selectedCategory == .favorites {
                 favoriteTypePicker
                 Picker("收藏标签", selection: $viewModel.selectedTag) {
@@ -118,7 +163,7 @@ public struct HistoryPanelView: View {
             viewModel.pasteSelected()
             return .handled
         }
-        // 空格键：预览选中图片
+        // 空格键：预览选中的图片或长文本
         .onKeyPress(.space) {
             guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, viewModel.canPreviewSelected else { return .ignored }
             viewModel.previewSelected()
@@ -181,6 +226,12 @@ public struct HistoryPanelView: View {
                 await ImageProcessing.shared.trimCaches()
             } catch { }
         }
+        .onChange(of: sequenceSettings.sequenceNextID) {
+            guard let id = sequenceSettings.sequenceNextID,
+                  let index = viewModel.filteredItems.firstIndex(where: { $0.id == id }) else { return }
+            viewModel.isKeyboardNavigating = true
+            viewModel.selectedIndex = index
+        }
         .onAppear {
             viewModel.reload()
             searchFocused = true
@@ -228,6 +279,9 @@ public struct HistoryPanelView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
     }
 
     private func toggleWindowPinned() {
@@ -255,6 +309,14 @@ public struct HistoryPanelView: View {
                     modifiers: [.command]
                 )
                 .foregroundColor(viewModel.selectedCategory == category ? .accentColor : .primary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    viewModel.selectedCategory == category
+                        ? Color.accentColor.opacity(0.12)
+                        : Color.clear,
+                    in: Capsule()
+                )
             }
 
             Spacer()
@@ -265,6 +327,7 @@ public struct HistoryPanelView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
+        .padding(.top, 6)
     }
 
     private var favoriteTypePicker: some View {
@@ -319,6 +382,15 @@ public struct HistoryPanelView: View {
                     isSelected: viewModel.selectedIndex == index,
                     imageStorage: viewModel.imageStorage,
                     onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) },
+                    onCopy: {
+                        searchFocused = false
+                        viewModel.selectedIndex = index
+                        viewModel.copy(item: viewModel.filteredItems[index])
+                    },
+                    onSelect: {
+                        searchFocused = false
+                        viewModel.selectedIndex = index
+                    },
                     onPreview: {
                         searchFocused = false
                         viewModel.selectedIndex = index
@@ -666,11 +738,15 @@ final class HistoryPanelViewModel: ObservableObject {
     func toggleFavorite(item: ClipboardItem) {
         guard let id = item.id else { return }
         do {
+            if !item.isFavorite {
+                let materialized = try FavoriteStorage().materialize(item)
+                try historyStore.updateContent(id: id, content: materialized.content)
+            }
             try historyStore.updateFavorite(id: id, isFavorite: !item.isFavorite)
             reload()
             selectedIndex = filteredItems.firstIndex(where: { $0.id == id }) ?? selectedIndex
         }
-        catch { AppSettings.shared.message = "收藏更新失败：\(error.localizedDescription)" }
+        catch { AppSettings.shared.message = "收藏失败：文件或图片无法复制到本地：\(error.localizedDescription)" }
     }
 
     func beginEditingNote(item: ClipboardItem) {
@@ -704,14 +780,18 @@ final class HistoryPanelViewModel: ObservableObject {
     func previewSelected() {
         guard let index = selectedIndex,
               filteredItems.indices.contains(index),
-              filteredItems[index].type == .image else { return }
+              filteredItems[index].type == .image || filteredItems[index].type == .text else { return }
+        if filteredItems[index].type == .text {
+            previewText(item: filteredItems[index])
+            return
+        }
         guard validateFiles(filteredItems[index]) else { return }
         previewItem = PreviewWrapper(item: filteredItems[index])
     }
 
     var canPreviewSelected: Bool {
         guard let index = selectedIndex, filteredItems.indices.contains(index) else { return false }
-        return filteredItems[index].type == .image
+        return filteredItems[index].type == .image || filteredItems[index].type == .text
     }
 
     var canCopySelected: Bool {
