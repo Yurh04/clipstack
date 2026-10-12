@@ -72,14 +72,14 @@ struct HistoryItemRow: View {
             .buttonStyle(.borderless)
             .help(item.isFavorite ? "取消收藏" : "收藏并保留")
 
-            if (item.type == .file || item.type == .text), let onCopy {
+            if let onCopy {
                 Button(action: onCopy) {
                     Label("复制", systemImage: "doc.on.doc")
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .help(item.type == .file ? "复制文件到系统剪贴板" : "复制文本到系统剪贴板")
+                .help(copyHelp)
             }
         }
         .padding(.horizontal, 12)
@@ -182,6 +182,14 @@ struct HistoryItemRow: View {
         case .text: return "文本"
         case .image: return "图片"
         case .file: return "文件"
+        }
+    }
+
+    private var copyHelp: String {
+        switch item.type {
+        case .text: return "复制文本到系统剪贴板"
+        case .image: return "复制图片到系统剪贴板"
+        case .file: return "复制文件到系统剪贴板"
         }
     }
 
