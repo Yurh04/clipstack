@@ -113,7 +113,7 @@ public struct HistoryPanelView: View {
             if !viewModel.operationMessage.isEmpty {
                 Text(viewModel.operationMessage).font(.caption).foregroundStyle(.secondary).padding(6)
             }
-            Text("↑↓ 选择 · ⌘C 复制 · ↩ 粘贴 · ⌘⇧S 收藏 · ⌘⌫ 删除 · ⌘Z 撤销")
+            Text("↑↓ 选择 · ⌘C 复制 · ⌘⇧S 收藏 · ⌘⌫ 删除 · ⌘Z 撤销")
                 .font(.system(size: 10)).foregroundStyle(.secondary).padding(6)
         }
         .frame(minWidth: 420, minHeight: 320)
@@ -128,58 +128,10 @@ public struct HistoryPanelView: View {
                 dropOverlay
             }
         }
-        .onKeyPress(keys: ["s"]) { press in
-            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers == [.command, .shift],
-                  let item = viewModel.selectedItem else { return .ignored }
-            viewModel.toggleFavorite(item: item)
-            return .handled
-        }
-        .onKeyPress(keys: [.delete]) { press in
-            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers.contains(.command),
-                  let item = viewModel.selectedItem else { return .ignored }
-            viewModel.delete(item: item)
-            return .handled
-        }
-        .onKeyPress(keys: ["z"]) { press in
-            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, press.modifiers == .command,
-                  !viewModel.pendingDeletions.isEmpty else { return .ignored }
-            viewModel.undoLastDeletion()
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
-            searchFocused = false
-            viewModel.moveSelectionUp()
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
-            searchFocused = false
-            viewModel.moveSelectionDown()
-            return .handled
-        }
-        .onKeyPress(.return) {
-            guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil else { return .ignored }
-            viewModel.pasteSelected()
-            return .handled
-        }
-        // 空格键：预览选中的图片或长文本
-        .onKeyPress(.space) {
-            guard !searchFocused, !viewModel.isEditingNote, viewModel.textPreviewItem == nil, viewModel.canPreviewSelected else { return .ignored }
-            viewModel.previewSelected()
-            return .handled
-        }
-        .onKeyPress(keys: ["1", "2", "3", "4", "5"]) { press in
-            guard press.modifiers.contains(.command) else { return .ignored }
-            switch press.key.character {
-            case "1": viewModel.selectedCategory = .all
-            case "2": viewModel.selectedCategory = .text
-            case "3": viewModel.selectedCategory = .image
-            case "4": viewModel.selectedCategory = .file
-            case "5": viewModel.selectedCategory = .favorites
-            default: break
-            }
-            return .handled
+        .background {
+            HistoryKeyboardHandler { event, editing in
+                handleHistoryKey(event, editing: editing)
+            }.frame(width: 0, height: 0)
         }
         .alert("编辑备注", isPresented: $viewModel.isEditingNote) {
             TextField("例如：测试环境地址", text: $viewModel.noteDraft)
@@ -199,25 +151,6 @@ public struct HistoryPanelView: View {
                 onCopy: { viewModel.copy(item: $0) },
                 onOCR: { viewModel.saveOCRText($0, for: wrapper.item) }
             )
-        }
-        // 注册为窗口级快捷键，避免搜索框焦点吞掉空格事件。
-        .overlay {
-            Button(action: { viewModel.previewSelected() }) {
-                EmptyView()
-            }
-            .keyboardShortcut(.space, modifiers: [])
-            .disabled(!viewModel.canPreviewSelected || searchFocused || viewModel.isEditingNote || viewModel.textPreviewItem != nil)
-            .opacity(0.001)
-            .frame(width: 1, height: 1)
-        }
-        .overlay {
-            Button(action: { viewModel.copySelected() }) {
-                EmptyView()
-            }
-            .keyboardShortcut("c", modifiers: [.command])
-            .disabled(!viewModel.canCopySelected || searchFocused || viewModel.textPreviewItem != nil || viewModel.isEditingNote)
-            .opacity(0.001)
-            .frame(width: 1, height: 1)
         }
         .task(id: viewModel.showsImageGrid) {
             guard viewModel.showsImageGrid else { return }
@@ -412,6 +345,48 @@ public struct HistoryPanelView: View {
     }
 
     // 文本/文件列表
+    private func handleHistoryKey(_ event: NSEvent, editing: Bool) -> Bool {
+        guard !viewModel.isEditingNote, viewModel.textPreviewItem == nil,
+              viewModel.previewItem == nil else { return false }
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if flags.isEmpty {
+            switch event.keyCode {
+            case 126, 125:
+                searchFocused = false
+                event.window?.makeFirstResponder(nil)
+                if event.keyCode == 126 { viewModel.moveSelectionUp() }
+                else { viewModel.moveSelectionDown() }
+                return true
+            case 49:
+                guard !editing, !searchFocused, viewModel.canPreviewSelected else { return false }
+                viewModel.previewSelected()
+                return true
+            default: return false
+            }
+        }
+        guard !editing, !searchFocused else { return false }
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        if flags == .command {
+            if key == "c", viewModel.canCopySelected {
+                viewModel.copySelected()
+                return true
+            }
+            if key == "z", !viewModel.pendingDeletions.isEmpty {
+                viewModel.undoLastDeletion()
+                return true
+            }
+            if event.keyCode == 51, let item = viewModel.selectedItem {
+                viewModel.delete(item: item)
+                return true
+            }
+        }
+        if flags == [.command, .shift], key == "s", let item = viewModel.selectedItem {
+            viewModel.toggleFavorite(item: item)
+            return true
+        }
+        return false
+    }
+
     private var itemList: some View {
         LazyVStack(spacing: 2) {
             ForEach(viewModel.filteredItems.indices, id: \.self) { index in
@@ -421,12 +396,12 @@ public struct HistoryPanelView: View {
                     imageStorage: viewModel.imageStorage,
                     onTap: {
                         searchFocused = false
+                        let wasSelected = viewModel.selectedIndex == index
                         viewModel.selectedIndex = index
-                        switch ClipboardItemTapBehavior.action(for: viewModel.filteredItems[index]) {
+                        switch ClipboardItemTapBehavior.action(for: viewModel.filteredItems[index], isSelected: wasSelected) {
                         case .select:
                             break
                         case .preview:
-                            // 图片记录直接打开预览，避免依赖空格键焦点。
                             viewModel.previewSelected()
                         case .paste:
                             break

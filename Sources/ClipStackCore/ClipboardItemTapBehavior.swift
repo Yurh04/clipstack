@@ -4,11 +4,11 @@ public enum ClipboardItemTapBehavior: Equatable {
     case paste
     case preview
 
-    public static func action(for item: ClipboardItem) -> Self {
+    public static func action(for item: ClipboardItem, isSelected: Bool = false) -> Self {
         switch item.type {
         case .file: return .select
         case .text: return .select
-        case .image: return .preview
+        case .image: return isSelected ? .preview : .select
         }
     }
 }

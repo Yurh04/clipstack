@@ -2,6 +2,12 @@ import XCTest
 @testable import ClipStackCore
 
 final class ClipStackCoreTests: XCTestCase {
+    func testUnselectedImageClickOnlySelects() {
+        let item = ClipboardItem(type: .image, content: "/tmp/image.png")
+        XCTAssertEqual(ClipboardItemTapBehavior.action(for: item), .select)
+        XCTAssertEqual(ClipboardItemTapBehavior.action(for: item, isSelected: true), .preview)
+    }
+
     func testClipboardItemTapBehaviorKeepsTextAndFilesSelected() {
         XCTAssertEqual(
             ClipboardItemTapBehavior.action(for: ClipboardItem(type: .file, content: "/tmp/report.pdf")),
@@ -12,7 +18,7 @@ final class ClipStackCoreTests: XCTestCase {
             .select
         )
         XCTAssertEqual(
-            ClipboardItemTapBehavior.action(for: ClipboardItem(type: .image, content: "/tmp/image.png")),
+            ClipboardItemTapBehavior.action(for: ClipboardItem(type: .image, content: "/tmp/image.png"), isSelected: true),
             .preview
         )
     }
