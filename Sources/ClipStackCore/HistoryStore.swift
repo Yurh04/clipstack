@@ -89,6 +89,17 @@ public final class HistoryStore: Sendable {
 
     // MARK: - 增 / 查 / 删
 
+    /// Cheap revision for this store's connection, without decoding every history item.
+    public func changeCount() throws -> Int {
+        try dbQueue.read { $0.totalChangesCount }
+    }
+
+    public func nextDeletionDeadline() throws -> Date? {
+        try dbQueue.read { db in
+            try Date.fetchOne(db, sql: "SELECT MIN(deletionDeadline) FROM clipboardItem")
+        }
+    }
+
     /// 保存一条剪贴板记录。
     /// - 图片：只要 contentHash 已存在，就更新已有记录的时间戳，避免重复图片占空间。
     /// - 文本/文件：若与最新一条内容+类型完全相同，则更新该条的时间戳而非新建。

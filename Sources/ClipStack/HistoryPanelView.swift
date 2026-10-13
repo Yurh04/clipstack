@@ -169,7 +169,9 @@ public struct HistoryPanelView: View {
             viewModel.reload()
             searchFocused = true
         }
-        .task {
+        .task(id: sequenceSettings.panelVisible) {
+            guard sequenceSettings.panelVisible else { return }
+            viewModel.reload()
             await viewModel.refreshWhileVisible()
         }
     }
@@ -547,6 +549,7 @@ final class HistoryPanelViewModel: ObservableObject {
     let dropImporter: ClipboardDropImporter
 
     private var allItems: [ClipboardItem] = []
+    private var lastStoreChangeCount: Int?
 
     init(
         historyStore: HistoryStore,
@@ -563,12 +566,14 @@ final class HistoryPanelViewModel: ObservableObject {
 
     func reload() {
         do {
+            let revision = try historyStore.changeCount()
             let stored = try historyStore.all(includingPendingDeletion: true)
             allItems = stored.filter { $0.deletionDeadline == nil }
             pendingDeletions = stored.compactMap { item in
                 guard let id = item.id, let deadline = item.deletionDeadline, deadline > Date() else { return nil }
                 return (id, deadline)
             }.sorted { $0.deadline < $1.deadline }
+            lastStoreChangeCount = revision
             applyFilter()
         } catch {
             print("加载历史记录失败: \(error)")
@@ -604,14 +609,20 @@ final class HistoryPanelViewModel: ObservableObject {
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            pendingDeletions.removeAll { $0.deadline <= Date() }
+            let now = Date()
+            if pendingDeletions.contains(where: { $0.deadline <= now }) {
+                pendingDeletions.removeAll { $0.deadline <= now }
+            }
             reloadIfChanged()
         }
     }
 
     private func reloadIfChanged() {
         do {
+            let revision = try historyStore.changeCount()
+            guard revision != lastStoreChangeCount else { return }
             let latestItems = try historyStore.all()
+            lastStoreChangeCount = revision
             guard latestItems != allItems else { return }
             let selectedID = selectedIndex.flatMap { index in
                 filteredItems.indices.contains(index) ? filteredItems[index].id : nil

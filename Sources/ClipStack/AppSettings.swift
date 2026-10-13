@@ -6,6 +6,7 @@ import ServiceManagement
 @MainActor
 final class AppSettings: ObservableObject {
     static let shared = AppSettings()
+    @Published var panelVisible = false
     @Published var sequenceNextID: Int64?
     @Published var sequenceActive = false
     @Published var sequenceStatus = ""

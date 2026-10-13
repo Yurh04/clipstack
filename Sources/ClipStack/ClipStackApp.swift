@@ -57,10 +57,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         clipboardMonitor.start()
         let store = historyStore!, storage = imageStorage!
         deletionCleanupTask = Task {
+            var revision: Int?
+            var nextDeadline: Date?
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(1))
-                    try await ClipboardPipeline.shared.finalizeDeletions(store: store, storage: storage)
+                    let currentRevision = try store.changeCount()
+                    if currentRevision != revision {
+                        nextDeadline = try store.nextDeletionDeadline()
+                        revision = currentRevision
+                    }
+                    if let deadline = nextDeadline, deadline <= Date() {
+                        try await ClipboardPipeline.shared.finalizeDeletions(store: store, storage: storage)
+                        nextDeadline = try store.nextDeletionDeadline()
+                        revision = try store.changeCount()
+                    }
                 } catch is CancellationError { return }
                 catch { AppSettings.shared.message = "删除清理失败：\(error.localizedDescription)" }
             }
@@ -357,6 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
         window?.orderFrontRegardless()
+        AppSettings.shared.panelVisible = true
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -371,6 +383,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let closingWindow = notification.object as? NSWindow else { return }
+        if closingWindow === window {
+            AppSettings.shared.panelVisible = false
+        }
         persistWindowOrigin(closingWindow.frame.origin)
     }
 
@@ -400,6 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             persistWindowOrigin(window.frame.origin)
         }
         window?.orderOut(nil)
+        AppSettings.shared.panelVisible = false
     }
 
     private func setWindowPinned(_ isPinned: Bool) {

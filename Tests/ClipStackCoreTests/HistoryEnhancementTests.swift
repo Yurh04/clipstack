@@ -2,6 +2,23 @@ import XCTest
 @testable import ClipStackCore
 
 final class HistoryEnhancementTests: XCTestCase {
+    func testRevisionAndDeletionDeadlineTrackWritesWithoutChangingOnReads() throws {
+        let store = try HistoryStore.inMemory()
+        let initial = try store.changeCount()
+        XCTAssertNil(try store.nextDeletionDeadline())
+        _ = try store.all()
+        XCTAssertEqual(try store.changeCount(), initial)
+        let item = try store.save(ClipboardItem(type: .text, content: "revision"))
+        let savedRevision = try store.changeCount()
+        XCTAssertGreaterThan(savedRevision, initial)
+        let now = Date(timeIntervalSince1970: 100000)
+        try store.scheduleDeletion(id: XCTUnwrap(item.id), now: now)
+        XCTAssertEqual(try store.nextDeletionDeadline(), now.addingTimeInterval(10))
+        XCTAssertGreaterThan(try store.changeCount(), savedRevision)
+        XCTAssertTrue(try store.undoDeletion(id: XCTUnwrap(item.id), now: now))
+        XCTAssertNil(try store.nextDeletionDeadline())
+    }
+
     func testDeletionIsHiddenAndUndoPreservesMetadata() throws {
         let store = try HistoryStore.inMemory()
         let now = Date(timeIntervalSince1970: 100000)
