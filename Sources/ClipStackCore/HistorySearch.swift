@@ -45,4 +45,11 @@ extension ClipboardItem {
         let paths = type == .image ? [content] : content.components(separatedBy: "\n").filter { !$0.isEmpty }
         return paths.filter { !FileManager.default.fileExists(atPath: $0) }
     }
+
+    /// 可拖拽到「选择文件」对话框的本地文件 URL；文本或文件缺失时为空。
+    public var draggableFileURLs: [URL] {
+        guard type != .text else { return [] }
+        let paths = type == .image ? [content] : content.components(separatedBy: "\n").filter { !$0.isEmpty }
+        return paths.filter { FileManager.default.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
+    }
 }

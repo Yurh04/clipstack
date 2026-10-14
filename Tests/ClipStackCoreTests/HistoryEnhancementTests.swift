@@ -113,4 +113,17 @@ final class HistoryEnhancementTests: XCTestCase {
         XCTAssertEqual(item.missingFilePaths, [missing])
         XCTAssertTrue(ClipboardItem(type: .text, content: missing).missingFilePaths.isEmpty)
     }
+
+    func testDraggableURLsReturnOnlyExistingFiles() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("test".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let missing = url.path + "-missing"
+        let fileItem = ClipboardItem(type: .file, content: url.path + "\n" + missing)
+        XCTAssertEqual(fileItem.draggableFileURLs.map(\.path), [url.path])
+        let imageItem = ClipboardItem(type: .image, content: url.path)
+        XCTAssertEqual(imageItem.draggableFileURLs.map(\.path), [url.path])
+        XCTAssertTrue(ClipboardItem(type: .text, content: url.path).draggableFileURLs.isEmpty)
+        XCTAssertTrue(ClipboardItem(type: .image, content: missing).draggableFileURLs.isEmpty)
+    }
 }

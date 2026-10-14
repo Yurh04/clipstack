@@ -84,6 +84,7 @@ struct HistoryItemRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .draggableHistoryItem(item)
         .background(
             isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.045),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)

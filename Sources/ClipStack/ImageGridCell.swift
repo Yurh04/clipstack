@@ -82,6 +82,7 @@ struct ImageGridCell: View {
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
             )
             .contentShape(Rectangle())
+            .draggableHistoryItem(item)
             .task(id: item.id) {
                 thumbnail = await loadThumbnail()
             }
