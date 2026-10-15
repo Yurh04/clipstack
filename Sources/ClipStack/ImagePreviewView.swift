@@ -29,6 +29,8 @@ struct ImagePreviewView: View {
     let imageStorage: ImageStorage
     let onCopy: (ClipboardItem) -> Void
     let onOCR: (String) -> Void
+    var onDownload: ((ClipboardItem) -> Void)? = nil
+    var onDownloadTo: ((ClipboardItem) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var image: NSImage? = nil
@@ -56,6 +58,18 @@ struct ImagePreviewView: View {
                 Spacer()
                 HStack(spacing: 6) {
                     Button("复制") { copyImage() }
+                    if onDownload != nil || onDownloadTo != nil {
+                        Menu("下载") {
+                            if let onDownload {
+                                Button("下载到「下载」文件夹") { onDownload(item) }
+                            }
+                            if let onDownloadTo {
+                                Button("下载到指定文件夹…") { onDownloadTo(item) }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                    }
                     Button("−") { adjustZoom(by: -buttonZoomStep) }
                     Text("\(Int(zoom * 100))%")
                         .monospacedDigit()

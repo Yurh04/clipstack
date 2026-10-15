@@ -319,7 +319,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             w.titlebarAppearsTransparent = true
             w.level = (UserDefaults.standard.object(forKey: "ClipStack.pinned") as? Bool ?? true) ? .floating : .normal
             w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-            w.isMovableByWindowBackground = true
+            // 关闭背景拖窗，否则拖拽图片/文件项时会把整个面板一起拖走。
+            // 顶部透明标题栏区域仍可拖动窗口。
+            w.isMovableByWindowBackground = false
             w.hidesOnDeactivate = false
             w.isReleasedWhenClosed = false
             w.minSize = NSSize(width: 420, height: 320)

@@ -11,6 +11,8 @@ struct HistoryItemRow: View {
     let onFavorite: () -> Void
     let onEditNote: () -> Void
     let onDelete: () -> Void
+    let onDownload: () -> Void
+    let onDownloadTo: () -> Void
     let onPreviewText: () -> Void
 
     @State private var thumbnail: NSImage? = nil
@@ -52,6 +54,19 @@ struct HistoryItemRow: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
             .onTapGesture(count: 2, perform: onPreviewText)
+            .overlay {
+                // 图片 / 文件行叠加 AppKit 拖拽层：拖出真实文件 URL，
+                // 拖进「选择文件」面板会跳到文件真实所在文件夹并选中。
+                // 单击 / 双击仍转发给原有的选中 / 预览逻辑。
+                if item.type != .text {
+                    FileDragSource(
+                        urls: item.draggableFileURLs,
+                        image: thumbnail,
+                        onClick: onTap,
+                        onDoubleClick: onPreviewText
+                    )
+                }
+            }
 
             if item.type == .text {
                 Button(action: onPreviewText) {
@@ -84,7 +99,6 @@ struct HistoryItemRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .draggableHistoryItem(item)
         .background(
             isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.045),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -98,6 +112,10 @@ struct HistoryItemRow: View {
         .contextMenu {
             if item.type == .text {
                 Button("预览全文", action: onPreviewText)
+            }
+            if item.type != .text {
+                Button("下载", action: onDownload)
+                Button("下载到指定文件夹…", action: onDownloadTo)
             }
             Button("编辑备注与标签…", action: onEditNote)
             Button("删除记录", role: .destructive, action: onDelete)

@@ -31,8 +31,15 @@ struct ImageGridCell: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
-            .onTapGesture(count: 2, perform: onPreview)
-            .onTapGesture(perform: onSelect)
+            .overlay {
+                // AppKit 拖拽层：拖出真实文件 URL，并转发单击 / 双击。
+                FileDragSource(
+                    urls: item.draggableFileURLs,
+                    image: thumbnail,
+                    onClick: onSelect,
+                    onDoubleClick: onPreview
+                )
+            }
             .overlay(alignment: .topLeading) {
                 Button(action: onFavorite) {
                     Image(systemName: item.isFavorite ? "star.fill" : "star")
@@ -82,7 +89,6 @@ struct ImageGridCell: View {
                     .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 2)
             )
             .contentShape(Rectangle())
-            .draggableHistoryItem(item)
             .task(id: item.id) {
                 thumbnail = await loadThumbnail()
             }

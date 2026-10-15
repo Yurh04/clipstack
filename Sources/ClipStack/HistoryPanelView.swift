@@ -149,7 +149,9 @@ public struct HistoryPanelView: View {
                 item: wrapper.item,
                 imageStorage: viewModel.imageStorage,
                 onCopy: { viewModel.copy(item: $0) },
-                onOCR: { viewModel.saveOCRText($0, for: wrapper.item) }
+                onOCR: { viewModel.saveOCRText($0, for: wrapper.item) },
+                onDownload: { viewModel.download(item: $0) },
+                onDownloadTo: { viewModel.downloadToChosenFolder(item: $0) }
             )
         }
         .task(id: viewModel.showsImageGrid) {
@@ -335,6 +337,8 @@ public struct HistoryPanelView: View {
                 .aspectRatio(1, contentMode: .fit)
                 .id(index)
                 .contextMenu {
+                    Button("下载") { viewModel.download(item: viewModel.filteredItems[index]) }
+                    Button("下载到指定文件夹…") { viewModel.downloadToChosenFolder(item: viewModel.filteredItems[index]) }
                     Button("删除记录", role: .destructive) { viewModel.delete(item: viewModel.filteredItems[index]) }
                     Button("编辑备注与标签…") { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) }
                     Button(viewModel.filteredItems[index].isFavorite ? "取消收藏" : "收藏") {
@@ -417,6 +421,8 @@ public struct HistoryPanelView: View {
                     onFavorite: { viewModel.toggleFavorite(item: viewModel.filteredItems[index]) },
                     onEditNote: { viewModel.beginEditingNote(item: viewModel.filteredItems[index]) },
                     onDelete: { viewModel.delete(item: viewModel.filteredItems[index]) },
+                    onDownload: { viewModel.download(item: viewModel.filteredItems[index]) },
+                    onDownloadTo: { viewModel.downloadToChosenFolder(item: viewModel.filteredItems[index]) },
                     onPreviewText: { viewModel.previewText(item: viewModel.filteredItems[index]) }
                 )
                 .id(index)
@@ -675,6 +681,41 @@ final class HistoryPanelViewModel: ObservableObject {
     func copy(item: ClipboardItem) {
         guard validateFiles(item) else { return }
         onCopy(item)
+    }
+
+    /// 把图片 / 文件另存到「下载」文件夹。
+    func download(item: ClipboardItem) {
+        guard validateFiles(item) else { return }
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        performDownload(item, to: downloads)
+    }
+
+    /// 让用户选择一个目标文件夹后再下载。
+    func downloadToChosenFolder(item: ClipboardItem) {
+        guard validateFiles(item) else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "下载到此处"
+        panel.message = "选择要保存到的文件夹"
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        performDownload(item, to: directory)
+    }
+
+    private func performDownload(_ item: ClipboardItem, to directory: URL) {
+        do {
+            let written = try HistoryDownloader.download(item, to: directory)
+            if written.count == 1 {
+                operationMessage = "已下载到：\(written[0].path)"
+            } else {
+                operationMessage = "已下载 \(written.count) 个文件到：\(directory.path)"
+            }
+        } catch {
+            operationMessage = "下载失败：\(error.localizedDescription)"
+        }
     }
 
     private func validateFiles(_ item: ClipboardItem) -> Bool {

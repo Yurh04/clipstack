@@ -126,4 +126,31 @@ final class HistoryEnhancementTests: XCTestCase {
         XCTAssertTrue(ClipboardItem(type: .text, content: url.path).draggableFileURLs.isEmpty)
         XCTAssertTrue(ClipboardItem(type: .image, content: missing).draggableFileURLs.isEmpty)
     }
+
+    func testDownloadCopiesFilesAndAvoidsOverwrite() throws {
+        let work = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let source = work.appendingPathComponent("shot.png")
+        try Data("payload".utf8).write(to: source)
+        let destDir = work.appendingPathComponent("Downloads")
+
+        let item = ClipboardItem(type: .image, content: source.path)
+        let first = try HistoryDownloader.download(item, to: destDir)
+        XCTAssertEqual(first.map(\.lastPathComponent), ["shot.png"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first[0].path))
+
+        // 第二次下载同名文件不应覆盖，而是追加序号。
+        let second = try HistoryDownloader.download(item, to: destDir)
+        XCTAssertEqual(second.map(\.lastPathComponent), ["shot-1.png"])
+    }
+
+    func testDownloadRejectsTextAndMissingFiles() {
+        XCTAssertThrowsError(
+            try HistoryDownloader.download(ClipboardItem(type: .text, content: "hi"), to: FileManager.default.temporaryDirectory)
+        )
+        XCTAssertThrowsError(
+            try HistoryDownloader.download(ClipboardItem(type: .image, content: "/nope/missing.png"), to: FileManager.default.temporaryDirectory)
+        )
+    }
 }
