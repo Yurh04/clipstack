@@ -14,6 +14,10 @@ final class AppSettings: ObservableObject {
     var onStopSequence: (() -> Void)?
     @Published var paused = false
     @Published var loginEnabled = false
+    /// 是否在顶部浮层（灵动岛）显示剪贴板内容。
+    @Published var islandEnabled: Bool {
+        didSet { UserDefaults.standard.set(islandEnabled, forKey: "ClipStack.islandEnabled") }
+    }
     @Published var message = ""
     @Published var storageSummary = ""
     @Published var busy = false
@@ -28,10 +32,12 @@ final class AppSettings: ObservableObject {
     var onStorageRefresh: (() -> Void)?
     var onClearHistory: ((Bool) -> Void)?
     var onClearCache: (() -> Void)?
+    var onIslandChange: ((Bool) -> Void)?
 
     private init() {
         retentionDays = UserDefaults.standard.integer(forKey: "ClipStack.retentionDays")
         excludedApps = UserDefaults.standard.stringArray(forKey: "ClipStack.excludedApps") ?? []
+        islandEnabled = UserDefaults.standard.object(forKey: "ClipStack.islandEnabled") as? Bool ?? true
     }
 
     func refreshLogin() {
@@ -53,6 +59,12 @@ final class AppSettings: ObservableObject {
     func togglePause() {
         paused.toggle()
         onPauseChange?(paused)
+    }
+
+    /// 切换灵动岛开关并通知界面刷新。
+    func toggleIsland() {
+        islandEnabled.toggle()
+        onIslandChange?(islandEnabled)
     }
 
     func addExcludedApp() {
@@ -86,6 +98,12 @@ struct ClipStackSettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Button(settings.paused ? "恢复记录" : "暂停记录") { settings.togglePause() }
                 Text("暂停期间不记录系统剪贴板，手动拖入仍可使用；恢复时不补录暂停期间的内容。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("灵动岛") {
+                Toggle("剪贴板内容显示在灵动岛", isOn: Binding(
+                    get: { settings.islandEnabled }, set: { _ in settings.toggleIsland() }))
+                Text("屏幕顶部浮层：复制后自动显示最新一条，3 秒后收起；鼠标悬停展开最近 5 条，点击即粘贴到当前应用。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("隐私") {

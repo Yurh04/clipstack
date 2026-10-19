@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pasteQueue = SequentialPasteQueue()
     private var lastSequencePaste = Date.distantPast
     private var pasteService: PasteService!
+    private var islandController: IslandWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 仅作为菜单栏应用运行：不显示 Dock 图标和 App 切换器图标。
@@ -51,10 +52,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         clipboardMonitor = ClipboardMonitor(store: historyStore, imageStorage: imageStorage)
         pasteService = PasteService(imageStorage: imageStorage)
 
-        if !PasteService.hasAccessibilityPermission {
-            PasteService.requestAccessibilityPermission()
-        }
+        // 不在启动时请求辅助功能权限：记录剪贴板不需要它，
+        // 无条件请求会导致每次启动都弹系统授权框并跳转「系统设置」。
+        // 真正要模拟 ⌘V 时才提示（见 ensureAccessibilityPermission）。
         clipboardMonitor.start()
+        setUpIslandWindow()
         let store = historyStore!, storage = imageStorage!
         deletionCleanupTask = Task {
             var revision: Int?
@@ -95,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         AppSettings.shared.onStorageRefresh = { [weak self] in self?.refreshStorageSummary() }
         AppSettings.shared.onClearHistory = { [weak self] includingFavorites in self?.clearHistory(includingFavorites: includingFavorites) }
         AppSettings.shared.onClearCache = { [weak self] in self?.clearRegenerableCaches() }
+        AppSettings.shared.onIslandChange = { [weak self] enabled in self?.islandController?.toggleEnabled(enabled) }
 
         AppSettings.shared.onStartSequence = { [weak self] ids in
             guard let self, !ids.isEmpty else { return }
@@ -250,7 +253,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         for (title, action) in [
             ("打开面板", #selector(openPanel)),
-            (AppSettings.shared.paused ? "恢复记录" : "暂停记录", #selector(toggleRecording)),
+            (AppSettings.shared.paused ? "恢复记录" : "暂停记录", #selector(toggleRecording))
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        // 灵动岛开关：用勾选状态显示当前是否开启。
+        let islandItem = NSMenuItem(title: "灵动岛", action: #selector(toggleIsland), keyEquivalent: "")
+        islandItem.target = self
+        islandItem.state = AppSettings.shared.islandEnabled ? .on : .off
+        menu.addItem(islandItem)
+        for (title, action) in [
             ("设置…", #selector(openSettings)),
             ("退出 ClipStack", #selector(quitApp))
         ] {
@@ -271,6 +285,96 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func openPanel() { showWindow() }
     @objc private func toggleRecording() { AppSettings.shared.togglePause() }
     @objc private func quitApp() { NSApp.terminate(nil) }
+    @objc private func toggleIsland() { AppSettings.shared.toggleIsland() }
+
+    /// 创建顶部浮层（灵动岛）并接线：新记录到达时弹出展示。
+    private func setUpIslandWindow() {
+        let island = IslandWindowController(
+            historyStore: historyStore,
+            imageStorage: imageStorage,
+            actions: IslandActions(
+                onPaste: { [weak self] item in
+                    guard let self, self.ensureAccessibilityPermission() else { return }
+                    // 不切换前台应用，直接贴回当前光标处。
+                    _ = self.pasteService.pasteIntoCurrentApplication(item: item)
+                    self.clipboardMonitor.ignorePasteboardChangeCount(NSPasteboard.general.changeCount)
+                },
+                onCopy: { [weak self] item in
+                    guard let self else { return }
+                    _ = self.pasteService.copyToPasteboard(item: item)
+                    self.clipboardMonitor.ignorePasteboardChangeCount(NSPasteboard.general.changeCount)
+                },
+                onFavorite: { [weak self] item in self?.toggleFavoriteFromIsland(item) },
+                onDownload: { [weak self] item in self?.downloadFromIsland(item) },
+                onDownloadTo: { [weak self] item in self?.downloadFromIslandToChosenFolder(item) }
+            )
+        )
+        island.isEnabled = AppSettings.shared.islandEnabled
+        islandController = island
+        clipboardMonitor.onItemsRecorded = { [weak self] _ in self?.islandController?.showRecorded() }
+    }
+
+    /// 岛内收藏：与面板一致，收藏时把图片/文件复制成本地副本，避免原文件失效。
+    private func toggleFavoriteFromIsland(_ item: ClipboardItem) {
+        guard let id = item.id else { return }
+        do {
+            if !item.isFavorite {
+                let materialized = try FavoriteStorage().materialize(item)
+                try historyStore.updateContent(id: id, content: materialized.content)
+            }
+            try historyStore.updateFavorite(id: id, isFavorite: !item.isFavorite)
+            AppSettings.shared.message = item.isFavorite ? "已取消收藏。" : "已收藏并保留。"
+        } catch {
+            AppSettings.shared.message = "收藏失败：文件或图片无法复制到本地：\(error.localizedDescription)"
+        }
+    }
+
+    private func downloadFromIsland(_ item: ClipboardItem) {
+        let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+        performIslandDownload(item, to: downloads)
+    }
+
+    private func downloadFromIslandToChosenFolder(_ item: ClipboardItem) {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "下载到此处"
+        panel.message = "选择要保存到的文件夹"
+        guard panel.runModal() == .OK, let directory = panel.url else { return }
+        performIslandDownload(item, to: directory)
+    }
+
+    private func performIslandDownload(_ item: ClipboardItem, to directory: URL) {
+        do {
+            let written = try HistoryDownloader.download(item, to: directory)
+            AppSettings.shared.message = written.count == 1
+                ? "已下载到：\(written[0].path)"
+                : "已下载 \(written.count) 个文件到：\(directory.path)"
+        } catch {
+            AppSettings.shared.message = "下载失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// 模拟 ⌘V 需要辅助功能权限。缺失时提示一次并引导去系统设置授权，
+    /// 返回 false 表示这次粘贴无法进行（不再静默失败）。
+    private func ensureAccessibilityPermission() -> Bool {
+        guard !PasteService.hasAccessibilityPermission else { return true }
+        let alert = NSAlert()
+        alert.messageText = "需要辅助功能权限"
+        alert.informativeText = "ClipStack 需要辅助功能权限才能模拟 ⌘V，把内容粘贴到其他应用。授权后请重新打开 ClipStack。"
+        alert.addButton(withTitle: "打开辅助功能设置")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            PasteService.requestAccessibilityPermission()
+        }
+        return false
+    }
+
     @objc private func openSettings() {
         if settingsWindow == nil {
             let controller = NSHostingController(rootView: ClipStackSettingsView())
@@ -307,6 +411,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func showWindow() {
         pasteService.rememberFrontmostApp()
+        // 主面板打开时不再显示灵动岛，避免两个界面同时出现。
+        islandController?.hide()
 
         if window == nil {
             let w = NSWindow(
@@ -332,6 +438,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 imageStorage: imageStorage,
                 onPaste: { [weak self] item in
                     guard let self else { return }
+                    guard self.ensureAccessibilityPermission() else { return }
                     _ = self.pasteService.paste(item: item)
                     // 成功写入或失败后恢复原剪贴板，均忽略这次由 ClipStack
                     // 产生的 changeCount，避免把内部操作重新记录进历史。

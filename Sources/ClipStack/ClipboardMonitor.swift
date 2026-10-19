@@ -6,6 +6,8 @@ import ClipStackCore
 public final class ClipboardMonitor {
     private let store: HistoryStore
     private let imageStorage: ImageStorage
+    /// 记录成功写入历史时回调（用于灵动岛等浮层提示）。
+    public var onItemsRecorded: (([ClipboardItem]) -> Void)?
     private var timer: DispatchSourceTimer?
     private var lastChangeCount = 0
     private var ignoredChangeCounts = Set<Int>()
@@ -59,10 +61,11 @@ public final class ClipboardMonitor {
         guard pb.changeCount == count else { return }
         let previous = pending
         let store = store, storage = imageStorage, source = app?.localizedName
-        pending = Task {
+        pending = Task { [weak self] in
             await previous?.value
             do {
-                _ = try await ClipboardPipeline.shared.ingest(inputs, source: source, store: store, storage: storage)
+                let created = try await ClipboardPipeline.shared.ingest(inputs, source: source, store: store, storage: storage)
+                if !created.isEmpty { self?.onItemsRecorded?(created) }
             } catch { AppSettings.shared.message = "记录失败：\(error.localizedDescription)" }
         }
     }
