@@ -26,6 +26,7 @@ cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_CONTENTS/Resources/AppIcon.icns"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 
+CODESIGN_ID="-" # 本地开发用 ad-hoc 签名即可，但必须签，否则 bundle 签名非法
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -42,6 +43,13 @@ cat >"$INFO_PLIST" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# 必须对整个 bundle 重新签名：
+# swift build 只给可执行文件打了 ad-hoc 签名，Info.plist 和 Resources 没被覆盖，
+# 直接打包出的 .app 签名是无效的（codesign --verify 会失败），
+# 系统会因此认为这是一个"来历不明"的程序，辅助功能授权每次启动都失效。
+codesign --force --sign "$CODESIGN_ID" --identifier "$BUNDLE_ID" "$APP_BUNDLE"
+codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
